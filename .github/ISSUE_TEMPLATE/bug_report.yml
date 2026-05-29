@@ -1,0 +1,98 @@
+name: "Bug report (CZ)"
+description: "Nahlášení chyby při testování synchronizace questů"
+title: "[BUG] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Díky za hlášení! Vyplň prosím co nejvíc polí — usnadní to dohledání.
+        Postup a scénáře viz [TESTING.md](../blob/main/TESTING.md).
+
+  - type: dropdown
+    id: scenario
+    attributes:
+      label: Scénář
+      description: Kterého testovacího scénáře se to týká?
+      options:
+        - "A — Shop (opakovatelný týmový)"
+        - "B — Progrese (1 odměna na tým)"
+        - "C — Sólo kapitoly (rank, QoL)"
+        - "D — Completion toast"
+        - "E — Cross-server konzistence"
+        - "F — Zachování postupu po deployi/restartu"
+        - "G — Týmové operace"
+        - "H — Výpadek databáze"
+        - "Jiné / nezařazeno"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: server
+    attributes:
+      label: Server
+      description: Kde se to projevilo?
+      options:
+        - "agr1"
+        - "agr2"
+        - "oba (cross-server)"
+        - "nevím"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Verze modu
+      description: 'Řádek z logu "FTB Quests Sync <verze> ready", nebo se zeptej admina.'
+      placeholder: "např. 1.0.22"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Kroky k reprodukci
+      description: Co jsi přesně dělal, krok po kroku.
+      placeholder: |
+        1. V týmu na agr1 jsem ...
+        2. Druhý člen na agr2 ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Očekávané chování
+      description: Co se podle TESTING.md / README mělo stát.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Skutečné chování
+      description: Co se reálně stalo.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Závažnost
+      options:
+        - "Critical — zmizel postup/odměny, duplikace odměn"
+        - "High — týmová odměna jde vzít víckrát, cross-server nesync"
+        - "Medium — toast nechodí, membership se nepropíše"
+        - "Low — kosmetika, drobné prodlevy"
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Čas, log, screenshot
+      description: 'Přibližný čas (kvůli logu), screenshot, případně řádky z latest.log (grep "FTBQuestsSync"). Necitlivé údaje — žádná hesla/IP.'
+    validations:
+      required: false

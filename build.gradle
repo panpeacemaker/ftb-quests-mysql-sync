@@ -1,0 +1,141 @@
+plugins {
+    id 'eclipse'
+    id 'idea'
+    id 'maven-publish'
+    id 'net.minecraftforge.gradle' version '[6.0.16,6.2)'
+    id 'org.spongepowered.mixin' version '0.7.+'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+}
+
+version = '1.0.32'
+group = 'net.agrarius.ftbquestssync'
+archivesBaseName = 'ftb-quests-mysql-sync'
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+minecraft {
+    mappings channel: 'official', version: '1.20.1'
+    runs {
+        server {
+            workingDirectory project.file('run')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+            property 'forge.enabledGameTestNamespaces', 'ftbquestssync'
+            property 'mixin.env.remapRefMap', 'true'
+            property 'mixin.env.refMapRemappingFile', "${projectDir}/build/createSrgToMcp/output.srg"
+            mods {
+                ftbquestssync {
+                    source sourceSets.main
+                }
+            }
+        }
+    }
+}
+
+mixin {
+    add sourceSets.main, "ftbquestssync.refmap.json"
+    config "ftbquestssync.mixins.json"
+}
+
+repositories {
+    mavenCentral()
+    maven { url = "https://maven.saps.dev/releases" } // FTB
+    maven { url = "https://maven.architectury.dev/" }
+    maven { url = "https://maven.minecraftforge.net/" }
+}
+
+configurations {
+    shade
+    implementation.extendsFrom shade
+}
+
+dependencies {
+    minecraft 'net.minecraftforge:forge:1.20.1-47.4.10'
+
+    compileOnly files(
+        "${rootDir}/libs/ftb-quests-forge-2001.4.18.jar",
+        "${rootDir}/libs/ftb-chunks-forge-2001.3.6.jar",
+        "${rootDir}/libs/ftb-teams-forge-2001.3.2.jar",
+        "${rootDir}/libs/ftb-library-forge-2001.2.12.jar",
+        "${rootDir}/libs/architectury-9.2.14-forge.jar"
+    )
+
+    annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+
+    shade('com.zaxxer:HikariCP:5.1.0') {
+        exclude group: 'org.slf4j'
+    }
+    shade('com.mysql:mysql-connector-j:8.3.0') {
+        exclude group: 'org.slf4j'
+        exclude group: 'com.oracle.oci.sdk'
+    }
+    shade('redis.clients:jedis:5.1.0') {
+        exclude group: 'org.slf4j'
+        exclude group: 'org.json'
+    }
+}
+
+jar {
+    enabled = false
+    dependsOn shadowJar
+}
+
+shadowJar {
+    outputs.upToDateWhen { false }
+    archiveBaseName.set(archivesBaseName)
+    archiveVersion.set(project.version.toString())
+    archiveClassifier.set('')
+    destinationDirectory.set(layout.buildDirectory.dir('libs'))
+    configurations = [project.configurations.shade]
+    from sourceSets.main.output
+    relocate 'com.zaxxer.hikari',    'net.agrarius.ftbquestssync.shaded.hikari'
+    relocate 'com.mysql',            'net.agrarius.ftbquestssync.shaded.mysql'
+    relocate 'redis.clients.jedis',  'net.agrarius.ftbquestssync.shaded.jedis'
+    relocate 'com.google.protobuf',  'net.agrarius.ftbquestssync.shaded.protobuf'
+    relocate 'com.google.gson',      'net.agrarius.ftbquestssync.shaded.gson'
+    relocate 'org.apache.commons.pool2', 'net.agrarius.ftbquestssync.shaded.pool2'
+    relocate 'org.json',             'net.agrarius.ftbquestssync.shaded.json'
+
+    exclude 'META-INF/versions/9/module-info.class'
+    exclude 'META-INF/maven/**'
+    exclude 'META-INF/*.SF'
+    exclude 'META-INF/*.DSA'
+    exclude 'META-INF/*.RSA'
+    exclude 'module-info.class'
+    exclude 'google/protobuf/**'
+    exclude '**/*.proto'
+    exclude 'INFO_BIN'
+    exclude 'INFO_SRC'
+    exclude 'LICENSE'
+    exclude 'NOTICE'
+    exclude 'README'
+    exclude 'native-image/**'
+    exclude 'instrumentation/**'
+
+    mergeServiceFiles()
+
+    manifest {
+        attributes([
+                'Specification-Title'     : 'ftbquestssync',
+                'Specification-Vendor'    : 'Agrarius',
+                'Specification-Version'   : '1',
+                'Implementation-Title'    : project.name,
+                'Implementation-Version'  : project.version,
+                'Implementation-Vendor'   : 'Agrarius',
+                'MixinConfigs'            : 'ftbquestssync.mixins.json'
+        ])
+    }
+}
+
+reobf {
+    shadowJar {}
+}
+
+tasks.named('reobfShadowJar') {
+    dependsOn shadowJar
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 17
+}

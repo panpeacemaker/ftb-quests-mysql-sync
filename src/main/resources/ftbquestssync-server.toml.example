@@ -1,0 +1,40 @@
+[mysql]
+host = "your-mysql-host"
+port = 3306
+database = "agrarius_test"
+username = "agrarius"
+password = ""
+maxPoolSize = 5
+minIdle = 2
+useSsl = true
+allowPublicKeyRetrieval = false
+
+[redis]
+redisHost = "your-redis-host"
+redisPort = 6379
+redisPassword = ""
+
+[server]
+# Optional JVM property override e.g. -Dluckperms.server=server1/server2
+# TOML serverId wins over JVM fallback.
+serverId = "server1"
+
+[features]
+syncQuests = true
+syncTeams = false
+sendFullTeamData = true
+sendDeltaPackets = false
+conflictPolicy = "reload_remote"
+
+[policy]
+# blacklist = listed chapters/quests/tasks stay per-player; everything else team-shared
+# whitelist = only listed chapters/quests/tasks are team-shared; everything else per-player
+mode = "blacklist"
+soloChapterIds = ["3622ED01311E6763", "3CEC7F7BAD54E4C6"]
+repeatableSoloChapterIds = ["3622ED01311E6763", "3CEC7F7BAD54E4C6"]
+soloQuestIds = []
+soloTaskIds = []
+syncSoloProgressPerPlayer = true
+soloRewardsPerPlayer = true
+teamRewardsDedupGlobal = true
+rewardFailClosed = true

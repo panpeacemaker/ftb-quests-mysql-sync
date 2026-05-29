@@ -1,0 +1,45 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="MIT"
+issueTrackerURL="https://github.com/sky-ux941/ftb-quests-mysql-sync/issues"
+
+[[mods]]
+modId="ftbquestssync"
+version="${file.jarVersion}"
+displayName="FTB Quests MySQL Sync"
+authors="https://github.com/panpeacemaker, sisyphus"
+description='''
+MySQL synchronization for FTB Quests team data across multiple servers.
+Enables shared quest progress for multi-server setups.
+'''
+
+[modproperties.ftbquestssync]
+    mixinConfigs="ftbquestssync.mixins.json"
+
+[[dependencies.ftbquestssync]]
+    modId="forge"
+    mandatory=true
+    versionRange="[47,)"
+    ordering="NONE"
+    side="SERVER"
+
+[[dependencies.ftbquestssync]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="[1.20.1]"
+    ordering="NONE"
+    side="SERVER"
+
+[[dependencies.ftbquestssync]]
+    modId="ftbquests"
+    mandatory=true
+    versionRange="[2001.4.0,)"
+    ordering="AFTER"
+    side="SERVER"
+
+[[dependencies.ftbquestssync]]
+    modId="ftbteams"
+    mandatory=true
+    versionRange="[2001.3.0,)"
+    ordering="AFTER"
+    side="SERVER"
