@@ -1,7 +1,7 @@
 modLoader="javafml"
 loaderVersion="[47,)"
 license="MIT"
-issueTrackerURL="https://github.com/sky-ux941/ftb-quests-mysql-sync/issues"
+issueTrackerURL="https://github.com/panpeacemaker/ftb-quests-mysql-sync/issues"
 
 [[mods]]
 modId="ftbquestssync"
