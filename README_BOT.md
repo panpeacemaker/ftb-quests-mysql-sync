@@ -4,9 +4,14 @@ Maintenance guide for an AI coding agent. Dense, factual. Read **Hard Invariants
 
 ## Overview
 
-- Forge **1.20.1** mod. Syncs **FTB Quests TEAM data** (quest progress, completions, reward claims) across multiple MC servers via shared **MySQL + Redis**.
-- **Server-only.** Clients run **vanilla FTB Quests** (no client mod).
+- Forge **1.20.1** mod. Syncs across multiple MC servers via shared **MySQL + Redis**:
+  - **FTB Quests TEAM data** (`syncQuests=true`): quest progress, completions, reward claims, shop cycles, completion toasts.
+  - **FTB Teams** (`syncTeams=false`): party membership, owner, **team color** (live, no relog), team name.
+  - **FTB Chunks** (`syncChunks=false`): claimed + force-loaded chunks per team.
+- **Server-only.** Clients run **vanilla FTB** (no client mod).
 - Mod id package: `net.agrarius.ftbquestssync`.
+- `syncTeams` / `syncChunks` default OFF; enable in config. Both require stable per-player UUIDs from the proxy.
+- **State authority = MySQL. Redis = invalidation/pub-sub only.** Peers re-read DB on every event.
 
 ## Repo Map
 
@@ -26,6 +31,11 @@ Maintenance guide for an AI coding agent. Dense, factual. Read **Hard Invariants
 | `.../mixin/RewardClaimMixin.java` | `@Mixin(TeamData)`. `claimReward` HEAD guard (TEAM dedup via `MySQLBackend.tryClaimRewardScopedAsync` with `cycle=completionCount`, `questRewardIds`); pass-through for plain vanilla chapters; `onResetReward`; `forceSaveAfterClaim`; `ThreadLocal<ShopCycleReset> pendingShopReset` (set only when `teamClaimOverride && cycleComplete`). References `ShopCycleReset` and `ShopRepeatableSync` (both NON-mixin package). |
 | `.../mixin/TeamDataAccessor.java` | `@Mixin(TeamData)` `@Accessor` interface for `claimedRewards`, `completionCount`, `questRepeatableTime`. |
 | `.../mixin/BaseQuestFileMixin.java`, `RequestTeamDataMessageMixin.java`, `RankSoloTeamDataMixin.java`, `TeamDataMixin.java` | Pre-existing mixins. |
+| `.../TeamSync.java` | FTB Teams sync. Event listeners (CREATED/DELETED/JOINED/LEFT/CHANGED/OWNERSHIP/LOGGED_IN/PROPERTIES_CHANGED); persist team_info+membership; Redis reasons `member_add/member_kick/owner_transfer/props/changed`; `applyRemoteProps` (live color/name); peer member handlers; `onPlayerChanged` uses `getPreviousTeam()` to discriminate real party-exit vs login auto-create. Publish-after-commit via `upsertMembershipFuture`. |
+| `.../TeamMaterializer.java` | Reflection bridge for FTB Teams: `createTeamWithUuid`, `addPlayerToTeamReflective`, `removePlayerFromTeamReflective`, `forcePlayerToDbTeam` (stale-party detach + restore solo), `markTeamDirtyAndSync` (syncToAll), `transferPartyOwnership` (native + reflective fallback), `applyColor`, `ensureTeamMaterialized`. Login materialize converges player to DB team; solo-DB detaches from stale party. |
+| `.../TeamMutationGuard.java` | Anti-echo. ThreadLocal reentrant `suppressTeam(uuid)` / `suppressPlayer(uuid)` + `isTeamSuppressed` / `isPlayerSuppressed`. Wrap peer FTB mutations so they don't re-publish. Only valid INSIDE `server.execute` (NOT across async DB futures). |
+| `.../FtbSyncTeamCommand.java` | `/ftbsync team invite|kick|transfer <name>`. Owner-or-op gate. `invite` = direct add. `applyMemberKickLocal` = negative-edge (remove from kicked team by intent, not racy DB read). UUID resolver: profile cache → DB `selectPlayerUuidByName` → Mojang API (never offline UUID). **Cross-server invite/online-kick currently BROKEN — see Known Bugs.** |
+| `.../ChunkSync.java`, `ChunkMaterializer.java`, `ChunkClaimRecord.java`, `ChunkApplyGuard.java`, `ChunkLimitPatcher.java`, `ChunkSeeder.java` | FTB Chunks sync: capture claim/unclaim/forceload events → DB → Redis; materialize per-team claims on login + level-load; `ChunkApplyGuard` suppression + state machine; `ChunkSeeder` one-time DB seed from canonical server; `ChunkLimitPatcher` bumps claim limits reflectively. |
 
 ## Behavior Model
 
@@ -131,8 +141,21 @@ JAVA_HOME=/usr/lib/jvm/java-17-openjdk ./gradlew clean reobfShadowJar
 - [ ] `build.gradle` version == `FTBQuestsSync.java` version log.
 - [ ] No secrets / private IPs in diff.
 
+## Known Bugs (as of 1.0.32 — NOT fixed)
+
+- **Cross-server invite** (`/ftbsync team invite` for a player on the other backend): fails / player not added. Root cause investigated: invite resolution + propagation; native FTB invite is NOT hooked (accept-handshake is same-server only).
+- **Kick while target ONLINE on peer**: player stays in team with perms until relog. Root cause: publish-before-commit race + peer handler not removing the live online player reliably. 1.0.32 attempted a fix (publish-after-commit + negative-edge kick) but in-game test still FAILED.
+- Working: party membership sync at login, team color sync (live), chunk sync, quest sync.
+- See git history / Oracle design notes; underlying suspect includes proxy UUID stability and FTB client team-data caching until relog.
+
 ## Version History
 
 - `1.0.20` repeatable team-shared shop.
 - `1.0.21` one-reward-per-team progression chapters.
 - `1.0.22` cross-server completion toast.
+- `1.0.26` FTB Teams party membership sync.
+- `1.0.28` FTB Chunks claim + force-load sync.
+- `1.0.29` team color live sync.
+- `1.0.30` `/ftbsync team invite/kick/transfer` commands.
+- `1.0.31` offline-kick membership convergence fix (getPreviousTeam discriminator).
+- `1.0.32` publish-after-commit + negative-edge kick + UUID resolver — cross-server invite/online-kick STILL broken.

@@ -1,20 +1,26 @@
 # ftb-quests-mysql-sync
 
-Synchronizace týmových dat FTB Quests napříč více Minecraft servery přes sdílený MySQL + Redis backend.
+Synchronizace dat FTB Quests, FTB Teams a FTB Chunks napříč více Minecraft servery přes sdílený MySQL + Redis backend.
 
 ---
 
 ## Úvod / Co mod dělá
 
-`ftb-quests-mysql-sync` je mod pro **Forge 1.20.1**, který udržuje **týmová data FTB Quests konzistentní napříč více Minecraft servery**. Servery (např. `agr1` a `agr2`) sdílejí jeden MySQL a jeden Redis backend.
+`ftb-quests-mysql-sync` je serverový mod pro **Forge 1.20.1**, který udržuje **týmová data konzistentní napříč více Minecraft servery** za proxy (např. `agr1` a `agr2`). Všechny servery sdílejí jeden MySQL a jeden Redis backend, takže hráč může přecházet mezi servery a jeho tým, postup i claimnuté chunky zůstanou stejné.
 
-Synchronizují se tato týmová data:
+**Klienti běží na čistém (vanilla) FTB — žádný klientský mod není potřeba.**
 
-- postup v questech (quest progress),
-- dokončení questů (completions),
-- nárokování odměn (reward claims).
+Mod má tři nezávisle zapínatelné oblasti synchronizace:
 
-Díky tomu zůstane postup a odměny týmu konzistentní bez ohledu na to, zda jeho členové hrají na `agr1`, nebo `agr2`.
+| Oblast | Config přepínač | Výchozí stav | Co se synchronizuje |
+|---|---|---|---|
+| **Questy** (`syncQuests`) | `true` | zapnuto | Postup v questech, dokončení, nárokování odměn, shop cykly, completion toasty |
+| **Týmy** (`syncTeams`) | `false` | vypnuto | Členství v party, vlastník týmu, **barva týmu** (živě, bez relogu), název týmu |
+| **Chunky** (`syncChunks`) | `false` | vypnuto | Nárokované (claimed) a force-loadnuté chunky per tým |
+
+> **Pozn.:** `syncTeams` a `syncChunks` jsou ve výchozím stavu **vypnuté**. Zapínají se v configu (viz sekce Konfigurace) a vyžadují stabilní UUID hráčů z proxy (viz „Známá omezení").
+
+Díky tomu zůstanou postup, tým i claimnuté chunky konzistentní bez ohledu na to, na kterém serveru člen týmu zrovna hraje.
 
 ---
 
@@ -47,6 +53,53 @@ Díky tomu zůstane postup a odměny týmu konzistentní bez ohledu na to, zda j
 ### serverId
 
 Každý server má svůj `serverId` (např. `agr1`, `agr2`). Slouží k tomu, aby server **ignoroval vlastní odražené (echoed) aktualizace**, které se k němu vrátí přes Redis.
+
+### MySQL tabulky (týmy a chunky)
+
+Kromě questových tabulek mod používá:
+
+| Tabulka | Obsah |
+|---|---|
+| `ftbchunks_team_claims` | Nárokované/force-loadnuté chunky per tým (dim + souřadnice) |
+| `ftbquests_player_names` | Mapování jméno hráče → UUID (pro příkazy; plní se při loginu) |
+
+---
+
+## Synchronizace týmů (`syncTeams`)
+
+Když je `syncTeams = true`, mod synchronizuje **FTB Teams** napříč servery:
+
+- **Členství v party** — když si na `agr1` vytvoříš party a pozveš spoluhráče, uvidí se navzájem i po přechodu na `agr2`.
+- **Vlastník týmu** — vlastnictví party je konzistentní napříč servery.
+- **Barva týmu** — změna barvy týmu se propisuje **živě na druhý server bez nutnosti relogu** (od verze 1.0.29). Barva se projeví i v zobrazení nárokovaných chunků na mapě.
+- **Název týmu** — propisuje se stejnou cestou jako barva.
+
+### Jak to konverguje
+
+Authoritou je vždy **MySQL**. Lokální FTB událost → zápis do MySQL → Redis publish (invalidace) → druhý server načte aktuální stav z DB a aplikuje ho lokálně. Při loginu hráče se jeho tým „zhmotní" (materializuje) z DB, takže přechod mezi servery vždy skončí ve správném týmu.
+
+> **Vyžaduje stabilní UUID hráčů** z proxy (Velocity „modern forwarding"). Při offline/cracked UUID se identita může rozejít — viz „Známá omezení".
+
+---
+
+## Synchronizace chunků (`syncChunks`)
+
+Když je `syncChunks = true`, mod zrcadlí **FTB Chunks** claimy per tým napříč servery 1:1:
+
+- Nárokované chunky (claims) i force-load příznak se synchronizují.
+- Authoritou je MySQL; při konvergenci se lokální sada claimů srovná s DB.
+
+### Bezpečnost při zavedení (seeding)
+
+Tabulka `ftbchunks_team_claims` startuje **prázdná**. Aby první materializace nesmazala existující claimy, je nutné DB nejdřív naplnit z kanonického serveru:
+
+| Klíč | Význam |
+|---|---|
+| `chunkSeedOnStart` | Při startu naplní DB z claimů na tomto serveru (jednorázově) |
+| `chunkCanonicalServerId` | `serverId`, který je zdrojem pravdy pro seeding (např. `agr1`) |
+| `chunkForceLoadSync` | Synchronizovat i force-load příznak |
+
+> **Postup zavedení:** Nejdřív zapni `syncChunks` + `chunkSeedOnStart=true` na kanonickém serveru, nech naplnit DB, pak teprve zapni na druhém serveru. Jinak hrozí smazání claimů.
 
 ---
 
@@ -133,13 +186,17 @@ Konfigurační soubor:
 
 ### General
 
-| Klíč | Význam |
-|---|---|
-| `syncQuests` | Zapnout synchronizaci questů |
-| `syncTeams` | Zapnout synchronizaci týmů |
-| `sendFullTeamData` | Posílat plná týmová data |
-| `sendDeltaPackets` | Posílat delta pakety (přírůstkové změny) |
-| `conflictPolicy` | Politika řešení konfliktů |
+| Klíč | Význam | Výchozí |
+|---|---|---|
+| `syncQuests` | Zapnout synchronizaci questů | `true` |
+| `syncTeams` | Zapnout synchronizaci týmů (party, vlastník, barva, název) | `false` |
+| `syncChunks` | Zapnout synchronizaci FTB Chunks claimů | `false` |
+| `chunkSeedOnStart` | Jednorázově naplnit DB z claimů tohoto serveru | `false` |
+| `chunkCanonicalServerId` | `serverId` zdroje pravdy pro seeding chunků | `agr1` |
+| `chunkForceLoadSync` | Synchronizovat i force-load příznak chunků | `true` |
+| `sendFullTeamData` | Posílat plná týmová data | `true` |
+| `sendDeltaPackets` | Posílat delta pakety (přírůstkové změny) | `false` |
+| `conflictPolicy` | Politika řešení konfliktů | `reload_remote` |
 
 ### Policy
 
@@ -195,6 +252,32 @@ Hesla lze místo plaintextu v `.toml` dodat přes JVM `-D` system properties, na
 |---|---|
 | `true` (výchozí) | Nárokování odměn je **ZAMÍTNUTO** (bezpečné pro ekonomiku) |
 | `false` | Nárokování je povoleno **bez cross-server ochrany** (riziko duplikátů) |
+
+---
+
+## Příkazy pro správu týmů (experimentální)
+
+> ⚠️ **Tato funkce je experimentální a aktuálně NESPOLEHLIVÁ napříč servery.** Funguje pro hráče na stejném serveru; cross-server scénáře (pozvat/vyhodit hráče, který je na druhém serveru) mají známé chyby — viz „Známá omezení". Nepoužívej v ostrém provozu, dokud nebude opraveno.
+
+Při `syncTeams = true` registruje mod příkaz:
+
+```
+/ftbsync team invite <hráč>     # přidá hráče přímo do party (bez FTB pozvánky/přijetí)
+/ftbsync team kick <hráč>       # vyhodí hráče z party
+/ftbsync team transfer <hráč>   # převede vlastnictví party (cíl musí být už členem)
+```
+
+- Příkaz smí použít **vlastník party** nebo **operátor (op level ≥ 2)**.
+- `invite` je **přímé přidání** (ne nativní FTB pozvánka s přijetím), aby šlo přidat i hráče na druhém serveru.
+- Jméno hráče se překládá na UUID přes lokální cache → DB (`ftbquests_player_names`) → Mojang API. **Nikdy se nevytváří offline UUID.**
+
+---
+
+## Známá omezení
+
+- **Cross-server pozvání / vyhození zatím spolehlivě nefunguje.** Pozvání hráče, který je na druhém serveru, a vyhození hráče, který je online na druhém serveru, mají známé chyby (hráč se nemusí přidat / zůstane v týmu s právy do relogu). Synchronizace samotného členství při loginu a barvy týmu funguje; živé příkazy ne. Oprava se řeší.
+- **Stabilní UUID je nutnost.** Veškerá per-hráč synchronizace (týmy, chunky) stojí na tom, že proxy posílá konzistentní UUID hráče (Velocity „modern forwarding", online-mode). Při offline/cracked UUID se identita může rozejít a synchronizace selže.
+- **Seeding chunků je destruktivní, pokud se přeskočí.** Viz sekce „Synchronizace chunků" — prázdná DB + materializace bez seedingu = smazané claimy. Vždy nejdřív naplň DB z kanonického serveru.
 
 ---
 
@@ -345,3 +428,9 @@ grep "FTBQuestsSync" <server>/logs/latest.log
 | `1.0.20` | Opakovatelný týmově sdílený shop |
 | `1.0.21` | Jedna odměna na tým pro progresní kapitoly |
 | `1.0.22` | Cross-server completion toast pro online spoluhráče |
+| `1.0.26` | Synchronizace členství v party (FTB Teams) napříč servery |
+| `1.0.28` | Synchronizace FTB Chunks claimů + force-load per tým |
+| `1.0.29` | Synchronizace barvy týmu (živě, bez relogu) |
+| `1.0.30` | Příkazy `/ftbsync team invite/kick/transfer` (cross-server) |
+| `1.0.31` | Oprava konvergence při vyhození offline hráče |
+| `1.0.32` | Pokus o opravu cross-server pozvání a vyhození online hráče — **stále nespolehlivé**, viz Známá omezení |
