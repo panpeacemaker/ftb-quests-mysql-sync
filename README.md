@@ -434,3 +434,4 @@ grep "FTBQuestsSync" <server>/logs/latest.log
 | `1.0.30` | Příkazy `/ftbsync team invite/kick/transfer` (cross-server) |
 | `1.0.31` | Oprava konvergence při vyhození offline hráče |
 | `1.0.32` | Pokus o opravu cross-server pozvání a vyhození online hráče — **stále nespolehlivé**, viz Známá omezení |
+| `1.0.33` | Oprava issues #1–#4: rank už neteče do sdílených dat (fail-closed claim), disband/kick migruje questy+reward scopes na sólo tým (konec ztráty postupu a farmení coinů), single-owner invariant (oprava dvou ownerů + editace názvu), barva claimů se propíše na existující chunky bez relogu, publish-after-commit pro team props/owner |
