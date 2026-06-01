@@ -52,6 +52,8 @@ public final class RankSoloProgress {
             for (Chapter chapter : file.getAllChapters()) {
                 long chapterId = chapter.getId();
                 seenChapters.add(chapterId);
+                boolean teamChapter = Config.teamClaimChapterIds.contains(chapterId)
+                        || Config.teamSharedChapterIds.contains(chapterId);
                 boolean chapterListed = Config.soloChapterIds.contains(chapterId);
 
                 int questCount = 0;
@@ -59,7 +61,7 @@ public final class RankSoloProgress {
                 for (Quest quest : chapter.getQuests()) {
                     seenQuests.add(quest.id);
                     boolean questListed = Config.soloQuestIds.contains(quest.id);
-                    boolean questSolo = isPolicySolo(chapterListed, questListed, false);
+                    boolean questSolo = !teamChapter && isPolicySolo(chapterListed, questListed, false);
                     if (questSolo) {
                         quests.add(quest.id);
                         if (quest.canBeRepeated()) {
@@ -69,7 +71,7 @@ public final class RankSoloProgress {
                     questCount++;
                     for (Task task : quest.getTasks()) {
                         seenTasks.add(task.id);
-                        boolean taskSolo = isPolicySolo(chapterListed, questListed, Config.soloTaskIds.contains(task.id));
+                        boolean taskSolo = !teamChapter && isPolicySolo(chapterListed, questListed, Config.soloTaskIds.contains(task.id));
                         if (taskSolo) {
                             tasks.add(task.id);
                         }
