@@ -259,6 +259,7 @@ public final class TeamSync {
         if (!Config.syncTeams) return;
         String name = readName(team);
         String color = readColor(team);
+        String oldColor = cachedColor(team.getId());
         persistTeamFuture(team).whenComplete((ignored, e) -> {
             if (e != null) {
                 FTBQuestsSync.LOGGER.error("props persist failed team={}", team.getId(), e);
@@ -266,6 +267,9 @@ public final class TeamSync {
             }
             if (updatePropsCache(team.getId(), name, color)) {
                 publish("props", team.getId());
+            }
+            if (!Objects.equals(oldColor, color)) {
+                ChunkMaterializer.refreshTeamClaims(team.getId());
             }
         });
     }
@@ -567,6 +571,7 @@ public final class TeamSync {
         if (team == null) return;
 
         boolean changed = false;
+        boolean colorChanged = false;
         try (TeamMutationGuard.Scope ignored = TeamMutationGuard.suppressTeam(teamId)) {
             if (info.name() != null && !Objects.equals(readName(team), info.name())) {
                 team.setProperty(TeamProperties.DISPLAY_NAME, info.name());
@@ -578,10 +583,12 @@ public final class TeamSync {
                 if (parsedColor.isPresent()) {
                     team.setProperty(TeamProperties.COLOR, parsedColor.get());
                     changed = true;
+                    colorChanged = true;
                 }
             }
         }
         if (changed) TeamMaterializer.markTeamDirtyAndSync(mgr, team);
+        if (colorChanged) ChunkMaterializer.refreshTeamClaims(teamId);
         updatePropsCache(teamId, info.name(), info.color());
     }
 
@@ -622,6 +629,11 @@ public final class TeamSync {
     private boolean updatePropsCache(UUID teamId, String name, String color) {
         String[] previous = lastSyncedProps.put(teamId, new String[]{name, color});
         return previous == null || !Objects.equals(previous[0], name) || !Objects.equals(previous[1], color);
+    }
+
+    private String cachedColor(UUID teamId) {
+        String[] cached = lastSyncedProps.get(teamId);
+        return cached != null ? cached[1] : null;
     }
 
     private static GameProfile profileFor(MinecraftServer server, UUID playerId) {

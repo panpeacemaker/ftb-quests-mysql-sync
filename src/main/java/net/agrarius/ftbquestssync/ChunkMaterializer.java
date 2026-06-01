@@ -60,6 +60,24 @@ public final class ChunkMaterializer {
         server = minecraftServer;
         for (ServerLevel level : minecraftServer.getAllLevels()) onLevelLoad(level);
     }
+    public static void refreshTeamClaims(UUID teamId) {
+        if (!Config.syncChunks) return;
+        Team team = FTBTeamsAPI.api().getManager().getTeamByID(teamId).orElse(null);
+        if (team == null) {
+            FTBQuestsSync.LOGGER.debug("refreshTeamClaims: team not found {}", teamId);
+            return;
+        }
+        if (!FTBChunksAPI.api().isManagerLoaded()) return;
+        try {
+            Object mgr = Class.forName("dev.ftb.mods.ftbchunks.data.ClaimedChunkManagerImpl").getMethod("getInstance").invoke(null);
+            Object data = mgr.getClass().getMethod("getOrCreateData", dev.ftb.mods.ftbteams.api.Team.class).invoke(mgr, team);
+            Object srv = mgr.getClass().getMethod("getMinecraftServer").invoke(mgr);
+            data.getClass().getMethod("syncChunksToAll", net.minecraft.server.MinecraftServer.class).invoke(data, srv);
+            FTBQuestsSync.LOGGER.debug("Refreshed chunk claims for team {} color change", teamId);
+        } catch (Exception e) {
+            FTBQuestsSync.LOGGER.warn("refreshTeamClaims failed for team {}", teamId, e);
+        }
+    }
     private static void materializeTeamsForLoadedDim(String dim, List<ChunkClaimRecord> rows) {
         Set<UUID> teams = new HashSet<>();
         rows.forEach(row -> teams.add(row.teamId()));
