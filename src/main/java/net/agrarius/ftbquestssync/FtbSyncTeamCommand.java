@@ -206,10 +206,7 @@ public final class FtbSyncTeamCommand {
 
         try (TeamMutationGuard.Scope teamScope = TeamMutationGuard.suppressTeam(teamId);
              TeamMutationGuard.Scope playerScope = TeamMutationGuard.suppressPlayer(newOwner.getId())) {
-            for (MySQLBackend.TeamMemberRow member : members) {
-                TeamMaterializer.addPlayerToTeamReflective(team, member.playerUuid(), member.rank());
-            }
-            TeamMaterializer.addPlayerToTeamReflective(team, newOwner.getId(), "OWNER");
+            TeamMaterializer.applyMembershipSnapshot(team, members, newOwner.getId());
             changed = TeamMaterializer.transferPartyOwnership(team, source, newOwner);
         }
         if (changed) TeamMaterializer.markTeamDirtyAndSync(mgr, team);

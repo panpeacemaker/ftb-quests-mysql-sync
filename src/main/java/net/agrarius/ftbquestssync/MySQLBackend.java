@@ -208,6 +208,9 @@ public class MySQLBackend {
     private static final String SQL_UPDATE_TEAM_OWNER =
             "UPDATE ftbquests_team_info SET owner_uuid=?, deleted=0, updated_by_server=? WHERE team_id=?";
 
+    private static final String SQL_DEMOTE_OTHER_OWNERS =
+            "UPDATE ftbquests_team_membership SET rank='MEMBER', updated_by_server=? WHERE team_id=? AND player_uuid<>? AND rank='OWNER'";
+
     private static final String SQL_CREATE_RANK_PROGRESS =
             "CREATE TABLE IF NOT EXISTS ftbquests_rank_progress ("
             + "player_uuid CHAR(36) NOT NULL,"
@@ -890,6 +893,14 @@ public class MySQLBackend {
 
     public void upsertTeamInfo(UUID teamId, String type, String name, UUID owner, String color) {
         if (!isAvailable()) return;
+        try {
+            upsertTeamInfoOrThrow(teamId, type, name, owner, color);
+        } catch (Exception e) {
+            FTBQuestsSync.LOGGER.error("upsertTeamInfo failed for {}", teamId, e);
+        }
+    }
+
+    private void upsertTeamInfoOrThrow(UUID teamId, String type, String name, UUID owner, String color) throws Exception {
         try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_UPSERT_TEAM_INFO)) {
             ps.setString(1, teamId.toString());
@@ -901,8 +912,6 @@ public class MySQLBackend {
             int rows = ps.executeUpdate();
             FTBQuestsSync.LOGGER.info("Team info upsert: id={} type={} name={} owner={} color={} rows={}",
                     teamId, type, name, owner, color, rows);
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("upsertTeamInfo failed for {}", teamId, e);
         }
     }
 
@@ -912,6 +921,22 @@ public class MySQLBackend {
             CompletableFuture.runAsync(() -> upsertTeamInfo(teamId, type, name, owner, color), dbExecutor);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("DB queue full; cannot upsert team info {}", teamId, e);
+        }
+    }
+
+    public CompletableFuture<Void> upsertTeamInfoFuture(UUID teamId, String type, String name, UUID owner, String color) {
+        if (!isAvailable()) return CompletableFuture.failedFuture(new IllegalStateException("MySQL unavailable"));
+        try {
+            return CompletableFuture.runAsync(() -> {
+                try {
+                    upsertTeamInfoOrThrow(teamId, type, name, owner, color);
+                } catch (Exception e) {
+                    throw new CompletionException(e);
+                }
+            }, dbExecutor);
+        } catch (Exception e) {
+            FTBQuestsSync.LOGGER.warn("DB queue full; cannot upsert team info {}", teamId, e);
+            return CompletableFuture.failedFuture(e);
         }
     }
 
@@ -1120,21 +1145,67 @@ public class MySQLBackend {
 
     public boolean updateTeamOwner(UUID teamId, UUID newOwner) {
         if (!isAvailable()) return false;
-        boolean updated = false;
-        try (Connection conn = dataSource.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_UPDATE_TEAM_OWNER)) {
-            ps.setString(1, newOwner.toString());
-            ps.setString(2, RedisSync.getInstance().getServerId());
-            ps.setString(3, teamId.toString());
-            int rows = ps.executeUpdate();
-            FTBQuestsSync.LOGGER.info("Team owner update: team={} owner={} rows={}", teamId, newOwner, rows);
-            updated = rows > 0;
+        String serverId = RedisSync.getInstance().getServerId();
+        try (Connection conn = dataSource.getConnection()) {
+            boolean previousAutoCommit = conn.getAutoCommit();
+            try {
+                conn.setAutoCommit(false);
+
+                int ownerRows;
+                try (PreparedStatement ps = conn.prepareStatement(SQL_UPDATE_TEAM_OWNER)) {
+                    ps.setString(1, newOwner.toString());
+                    ps.setString(2, serverId);
+                    ps.setString(3, teamId.toString());
+                    ownerRows = ps.executeUpdate();
+                }
+
+                if (ownerRows <= 0) {
+                    conn.rollback();
+                    FTBQuestsSync.LOGGER.warn("Team owner update skipped: team={} owner={} rows=0", teamId, newOwner);
+                    return false;
+                }
+
+                int demotedRows;
+                try (PreparedStatement ps = conn.prepareStatement(SQL_DEMOTE_OTHER_OWNERS)) {
+                    ps.setString(1, serverId);
+                    ps.setString(2, teamId.toString());
+                    ps.setString(3, newOwner.toString());
+                    demotedRows = ps.executeUpdate();
+                }
+
+                int membershipRows;
+                try (PreparedStatement ps = conn.prepareStatement(SQL_UPSERT_MEMBERSHIP)) {
+                    ps.setString(1, newOwner.toString());
+                    ps.setString(2, teamId.toString());
+                    ps.setString(3, "OWNER");
+                    ps.setString(4, serverId);
+                    membershipRows = ps.executeUpdate();
+                }
+
+                conn.commit();
+                FTBQuestsSync.LOGGER.info(
+                        "Team owner update: team={} owner={} rows={} demoted={} membershipRows={}",
+                        teamId, newOwner, ownerRows, demotedRows, membershipRows);
+                return true;
+            } catch (Exception e) {
+                try {
+                    conn.rollback();
+                } catch (Exception rollbackError) {
+                    FTBQuestsSync.LOGGER.warn("updateTeamOwner rollback failed team={} owner={}", teamId, newOwner, rollbackError);
+                }
+                throw e;
+            } finally {
+                try {
+                    conn.setAutoCommit(previousAutoCommit);
+                } catch (Exception restoreError) {
+                    FTBQuestsSync.LOGGER.warn("updateTeamOwner autocommit restore failed team={} owner={}",
+                            teamId, newOwner, restoreError);
+                }
+            }
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.error("updateTeamOwner failed team={} owner={}", teamId, newOwner, e);
             return false;
         }
-        upsertMembership(newOwner, teamId, "OWNER");
-        return updated;
     }
 
 

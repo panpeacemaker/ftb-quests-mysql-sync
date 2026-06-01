@@ -11,6 +11,7 @@ import net.minecraft.server.level.ServerPlayer;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -84,14 +85,22 @@ public final class TeamMaterializer {
 
         MySQLBackend.TeamInfoRow infoRow = row.info();
         if (existing != null) {
-            addPlayerToTeam(existing, playerUuid, membership.rank());
+            try (TeamMutationGuard.Scope teamScope = TeamMutationGuard.suppressTeam(dbTeamId);
+                 TeamMutationGuard.Scope playerScope = TeamMutationGuard.suppressPlayer(playerUuid)) {
+                addPlayerToTeam(existing, playerUuid, membership.rank());
+                UUID owner = infoRow != null && infoRow.owner() != null ? infoRow.owner() : existing.getOwner();
+                applyMembershipSnapshot(existing, row.members(), owner);
+                if (infoRow != null) {
+                    applyName(existing, infoRow.name());
+                    applyColor(existing, infoRow.color());
+                }
+            }
             if (!forcePlayerToDbTeam(mgr, playerUuid, existing)) {
                 FTBQuestsSync.LOGGER.warn(
                         "DB-team convergence failed for player={} team={} — skipping sync to avoid wrong-team state",
                         playerUuid, dbTeamId);
                 return;
             }
-            if (infoRow != null) applyColor(existing, infoRow.color());
             markTeamDirtyAndSync(mgr, existing);
             TeamSync.getInstance().forceFullSyncToPlayer(player, dbTeamId);
             RedisSync.getInstance().forceReloadAndPushTo(dbTeamId, player);
@@ -109,25 +118,36 @@ public final class TeamMaterializer {
             return;
         }
 
-        for (MySQLBackend.TeamMemberRow m : row.members()) {
-            addPlayerToTeamReflective(created, m.playerUuid(), m.rank());
+        if (!(created instanceof Team createdTeam)) {
+            FTBQuestsSync.LOGGER.warn("Materialized team {} is not an FTB Team instance", dbTeamId);
+            return;
         }
+        applyMembershipSnapshot(createdTeam, row.members(), info.owner());
 
-        finalizeTeamCreation(mgr, created);
-        Team createdTeam = mgr.getTeamByID(dbTeamId).orElse(null);
-        if (createdTeam == null || !forcePlayerToDbTeam(mgr, playerUuid, createdTeam)) {
+        finalizeTeamCreation(mgr, createdTeam);
+        Team materializedTeam = mgr.getTeamByID(dbTeamId).orElse(null);
+        if (materializedTeam == null || !forcePlayerToDbTeam(mgr, playerUuid, materializedTeam)) {
             FTBQuestsSync.LOGGER.warn(
                     "DB-team convergence failed after create for player={} team={} — skipping sync",
                     playerUuid, dbTeamId);
             return;
         }
-        applyColor(createdTeam, info.color());
+        applyColor(materializedTeam, info.color());
         FTBQuestsSync.LOGGER.info("Materialized team {} ({}) locally from DB for player {}",
                 dbTeamId, info.name(), playerUuid);
         TeamSync.getInstance().forceFullSyncToPlayer(player, dbTeamId);
         // Newly created party team — send its quest data to the player now.
         RedisSync.getInstance().forceReloadAndPushTo(dbTeamId, player);
         ChunkMaterializer.materializeOnLogin(player);
+    }
+
+    private static void applyName(Team team, String name) {
+        if (team == null || name == null || name.isBlank()) return;
+        try {
+            team.setProperty(dev.ftb.mods.ftbteams.api.property.TeamProperties.DISPLAY_NAME, name);
+        } catch (Exception e) {
+            FTBQuestsSync.LOGGER.warn("Could not set team display name for {}", team.getId(), e);
+        }
     }
 
     private static void applyColor(Team team, String colorStr) {
@@ -155,8 +175,12 @@ public final class TeamMaterializer {
         }
         Object created = createTeamWithUuid(mgr, teamId, info.type(), info.name(), info.owner());
         if (created == null) return false;
-        for (MySQLBackend.TeamMemberRow member : MySQLBackend.getInstance().selectTeamMembers(teamId)) {
+        List<MySQLBackend.TeamMemberRow> members = MySQLBackend.getInstance().selectTeamMembers(teamId);
+        for (MySQLBackend.TeamMemberRow member : members) {
             addPlayerToTeamReflective(created, member.playerUuid(), member.rank());
+        }
+        if (created instanceof Team materialized) {
+            applyMembershipSnapshot(materialized, members, info.owner());
         }
         finalizeTeamCreation(mgr, created);
         boolean ok = mgr.getTeamByID(teamId).isPresent();
@@ -201,6 +225,47 @@ public final class TeamMaterializer {
         addPlayerToTeamReflective(team, playerUuid, rank);
     }
 
+    public static void applyMembershipSnapshot(Team team, List<MySQLBackend.TeamMemberRow> members, UUID ownerUuid) {
+        if (team == null) return;
+        if (ownerUuid != null && team instanceof PartyTeam) {
+            setPartyOwnerReflective(team, ownerUuid);
+        }
+        try {
+            Class<?> baseCls = Class.forName("dev.ftb.mods.ftbteams.data.AbstractTeamBase");
+            Field ranksField = baseCls.getDeclaredField("ranks");
+            ranksField.setAccessible(true);
+            Object ranksObj = ranksField.get(team);
+            if (!(ranksObj instanceof Map<?, ?> ranks)) {
+                FTBQuestsSync.LOGGER.warn("applyMembershipSnapshot ranks field was not a map team={}", team.getId());
+                return;
+            }
+
+            ranks.clear();
+            if (members != null) {
+                for (MySQLBackend.TeamMemberRow member : members) {
+                    addPlayerToTeamReflective(team, member.playerUuid(), member.rank());
+                }
+            }
+            if (ownerUuid != null) {
+                addPlayerToTeamReflective(team, ownerUuid, "OWNER");
+                java.util.List<UUID> ownersToDemote = new java.util.ArrayList<>();
+                for (Map.Entry<?, ?> entry : ranks.entrySet()) {
+                    if (entry.getKey() instanceof UUID playerUuid
+                            && !ownerUuid.equals(playerUuid)
+                            && entry.getValue() == TeamRank.OWNER) {
+                        ownersToDemote.add(playerUuid);
+                    }
+                }
+                for (UUID playerUuid : ownersToDemote) {
+                    addPlayerToTeamReflective(team, playerUuid, "MEMBER");
+                }
+            }
+        } catch (Exception e) {
+            FTBQuestsSync.LOGGER.warn("applyMembershipSnapshot reflection failed team={} owner={}",
+                    team.getId(), ownerUuid, e);
+        }
+    }
+
     @SuppressWarnings("unchecked")
     public static void addPlayerToTeamReflective(Object team, UUID playerUuid, String rank) {
         try {
@@ -209,15 +274,17 @@ public final class TeamMaterializer {
             ranksField.setAccessible(true);
             Map<UUID, TeamRank> ranks = (Map<UUID, TeamRank>) ranksField.get(team);
 
-            TeamRank parsed;
-            try {
-                parsed = TeamRank.valueOf(rank);
-            } catch (Exception e) {
-                parsed = TeamRank.MEMBER;
-            }
-            ranks.put(playerUuid, parsed);
+            ranks.put(playerUuid, parseRank(rank));
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.error("addPlayerToTeam reflection failed player={} rank={}", playerUuid, rank, e);
+        }
+    }
+
+    private static TeamRank parseRank(String rank) {
+        try {
+            return TeamRank.valueOf(rank);
+        } catch (Exception e) {
+            return TeamRank.MEMBER;
         }
     }
 

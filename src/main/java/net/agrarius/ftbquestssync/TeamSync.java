@@ -21,6 +21,7 @@ import redis.clients.jedis.JedisPubSub;
 
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -217,8 +218,26 @@ public final class TeamSync {
         if (!Config.syncTeams) return;
         Team team = ev.getTeam();
         if (TeamMutationGuard.isTeamSuppressed(team.getId())) return;
-        persistTeam(team);
-        publish("owner_transfer", team.getId());
+        UUID newOwner = ev.getToProfile() == null ? null : ev.getToProfile().getId();
+        if (newOwner == null) newOwner = team.getOwner();
+        if (newOwner == null) {
+            FTBQuestsSync.LOGGER.warn("owner_transfer skipped: team={} has no new owner", team.getId());
+            return;
+        }
+        UUID owner = newOwner;
+        persistTeamFuture(team).thenApply(ignored -> MySQLBackend.getInstance().updateTeamOwner(team.getId(), owner))
+                .whenComplete((updated, e) -> {
+                    if (e != null) {
+                        FTBQuestsSync.LOGGER.error("owner_transfer persist failed team={} owner={}", team.getId(), owner, e);
+                        return;
+                    }
+                    if (!Boolean.TRUE.equals(updated)) {
+                        FTBQuestsSync.LOGGER.warn("owner_transfer not published: DB owner update failed team={} owner={}",
+                                team.getId(), owner);
+                        return;
+                    }
+                    publish("owner_transfer", team.getId());
+                });
     }
 
     private void onPlayerLoggedIn(PlayerLoggedInAfterTeamEvent ev) {
@@ -229,12 +248,17 @@ public final class TeamSync {
         Team team = ev.getTeam();
         if (TeamMutationGuard.isTeamSuppressed(team.getId())) return;
         if (!Config.syncTeams) return;
-        persistTeam(team);
         String name = readName(team);
         String color = readColor(team);
-        if (updatePropsCache(team.getId(), name, color)) {
-            publish("props", team.getId());
-        }
+        persistTeamFuture(team).whenComplete((ignored, e) -> {
+            if (e != null) {
+                FTBQuestsSync.LOGGER.error("props persist failed team={}", team.getId(), e);
+                return;
+            }
+            if (updatePropsCache(team.getId(), name, color)) {
+                publish("props", team.getId());
+            }
+        });
     }
 
     public void reconcileOnLogin(net.minecraft.server.level.ServerPlayer player) {
@@ -318,19 +342,30 @@ public final class TeamSync {
         persistTeam(team, true);
     }
 
+    private CompletableFuture<Void> persistTeamFuture(Team team) {
+        if (team == null) return CompletableFuture.completedFuture(null);
+        String type = teamType(team);
+        String name = readName(team);
+        String color = readColor(team);
+        UUID owner = team.getOwner();
+        return MySQLBackend.getInstance().upsertTeamInfoFuture(team.getId(), type, name, owner, color);
+    }
+
     private void persistTeam(Team team, boolean async) {
         if (team == null) return;
-        String type;
-        if (team.isPartyTeam()) type = "PARTY";
-        else if (team.isServerTeam()) type = "SERVER";
-        else if (team.isPlayerTeam()) type = "PLAYER";
-        else type = "UNKNOWN";
-
+        String type = teamType(team);
         String name = readName(team);
         String color = readColor(team);
         UUID owner = team.getOwner();
         if (async) MySQLBackend.getInstance().upsertTeamInfoAsync(team.getId(), type, name, owner, color);
         else MySQLBackend.getInstance().upsertTeamInfo(team.getId(), type, name, owner, color);
+    }
+
+    private static String teamType(Team team) {
+        if (team.isPartyTeam()) return "PARTY";
+        if (team.isServerTeam()) return "SERVER";
+        if (team.isPlayerTeam()) return "PLAYER";
+        return "UNKNOWN";
     }
 
     private static String readName(Team team) {
