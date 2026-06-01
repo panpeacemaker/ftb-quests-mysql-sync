@@ -19,6 +19,7 @@ import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPubSub;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -137,9 +138,14 @@ public final class TeamSync {
     private void onDeleted(TeamEvent ev) {
         if (!Config.syncTeams) return;
         Team team = ev.getTeam();
-        if (TeamMutationGuard.isTeamSuppressed(team.getId())) return;
-        MySQLBackend.getInstance().markTeamDeletedAsync(team.getId());
-        publish("deleted", team.getId());
+        UUID teamId = team.getId();
+        if (TeamMutationGuard.isTeamSuppressed(teamId)) return;
+        List<UUID> memberUuids = MySQLBackend.getInstance().selectTeamMembers(teamId).stream()
+                .map(MySQLBackend.TeamMemberRow::playerUuid)
+                .toList();
+        MySQLBackend.getInstance().migratePartyToSoloMembers(teamId, memberUuids);
+        MySQLBackend.getInstance().markTeamDeletedAsync(teamId);
+        publish("deleted", teamId);
     }
 
     private void onJoinedParty(PlayerJoinedPartyTeamEvent ev) {
@@ -161,8 +167,9 @@ public final class TeamSync {
     private void onLeftParty(PlayerLeftPartyTeamEvent ev) {
         if (!Config.syncTeams) return;
         Team partyTeam = ev.getTeam();
+        UUID partyTeamId = partyTeam.getId();
         UUID playerId = ev.getPlayer().getUUID();
-        if (TeamMutationGuard.isTeamSuppressed(partyTeam.getId())) return;
+        if (TeamMutationGuard.isTeamSuppressed(partyTeamId)) return;
         TeamManager mgr = FTBTeamsAPI.api().getManager();
         Team playerTeam = mgr.getPlayerTeamForPlayerID(playerId).orElse(null);
         UUID targetTeamId = playerTeam == null ? playerId : playerTeam.getId();
@@ -173,7 +180,8 @@ public final class TeamSync {
                         FTBQuestsSync.LOGGER.error("kick solo-persist failed player={}", playerId, e);
                         return;
                     }
-                    publish("member_kick", partyTeam.getId(), playerId);
+                    migrateMemberQuestStateToSolo(partyTeamId, playerId);
+                    publish("member_kick", partyTeamId, playerId);
                 });
     }
 
@@ -201,6 +209,7 @@ public final class TeamSync {
                             FTBQuestsSync.LOGGER.error("kick solo-persist failed player={}", playerId, e);
                             return;
                         }
+                        migrateMemberQuestStateToSolo(previousPartyId, playerId);
                         TeamSync.getInstance().publishMemberKick(previousPartyId, playerId);
                     });
             return;
@@ -389,6 +398,21 @@ public final class TeamSync {
     private void persistMembership(UUID playerId, Team team) {
         if (team == null) return;
         MySQLBackend.getInstance().upsertMembershipAsync(playerId, team.getId(), rankName(team, playerId));
+    }
+
+    private void migrateMemberQuestStateToSolo(UUID partyTeamId, UUID playerId) {
+        MySQLBackend.getInstance().migratePartyMemberToSoloAsync(partyTeamId, playerId)
+                .whenComplete((result, error) -> {
+                    if (error != null) {
+                        FTBQuestsSync.LOGGER.error(
+                                "Party-to-solo quest migration failed party={} player={}",
+                                partyTeamId, playerId, error);
+                        return;
+                    }
+                    if (result != null) {
+                        RedisSync.getInstance().publishTeamUpdate(playerId, result.revision, result.hashHex);
+                    }
+                });
     }
 
     private static String rankName(Team team, UUID playerId) {

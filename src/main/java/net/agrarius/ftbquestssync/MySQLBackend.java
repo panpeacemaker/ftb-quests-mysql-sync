@@ -76,6 +76,12 @@ public class MySQLBackend {
     private static final String SQL_SELECT_META =
             "SELECT revision, data_hash FROM ftbquests_teamdata WHERE team_id = ?";
 
+    private static final String SQL_SELECT_TEAMDATA_FOR_UPDATE =
+            "SELECT data FROM ftbquests_teamdata WHERE team_id = ? FOR UPDATE";
+
+    private static final String SQL_SELECT_TEAMDATA_META_FOR_UPDATE =
+            "SELECT data, revision, data_hash FROM ftbquests_teamdata WHERE team_id = ? FOR UPDATE";
+
     private static final String SQL_CREATE_CLAIMS =
             "CREATE TABLE IF NOT EXISTS ftbquests_reward_claims ("
             + "team_id CHAR(36) NOT NULL,"
@@ -113,6 +119,12 @@ public class MySQLBackend {
             "INSERT IGNORE INTO ftbquests_reward_claim_scopes "
             + "(scope_type, scope_uuid, reward_id, cycle, state, team_id, claimed_at_ms, granted_by_server) "
             + "VALUES (?, ?, ?, ?, 'GRANTED', ?, ?, ?)";
+
+    private static final String SQL_CLONE_TEAM_SCOPED_CLAIMS =
+            "INSERT IGNORE INTO ftbquests_reward_claim_scopes "
+            + "(scope_type, scope_uuid, reward_id, cycle, state, team_id, claimed_at_ms, granted_by_server) "
+            + "SELECT scope_type, ?, reward_id, cycle, state, team_id, claimed_at_ms, granted_by_server "
+            + "FROM ftbquests_reward_claim_scopes WHERE scope_type='TEAM' AND scope_uuid=?";
 
     private static final String SQL_CLAIMS_SCOPED_PK_CYCLE =
             "SELECT COUNT(*) FROM information_schema.statistics "
@@ -524,6 +536,28 @@ public class MySQLBackend {
         }
     }
 
+    private static final class LockedTeamDataRow {
+        private final byte[] data;
+        private final long revision;
+        private final byte[] hash;
+
+        private LockedTeamDataRow(byte[] data, long revision, byte[] hash) {
+            this.data = data;
+            this.revision = revision;
+            this.hash = hash;
+        }
+    }
+
+    private static final class SerializedTeamData {
+        private final byte[] bytes;
+        private final byte[] hash;
+
+        private SerializedTeamData(byte[] bytes, byte[] hash) {
+            this.bytes = bytes;
+            this.hash = hash;
+        }
+    }
+
     public static final class ScopedClaimResult {
         public final boolean firstClaim;
         public final boolean cycleComplete;
@@ -806,6 +840,191 @@ public class MySQLBackend {
             }
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.error("MySQL load failed for team {}", teamId, e);
+            return null;
+        }
+    }
+
+    public boolean migratePartyMemberToSolo(UUID partyTeamId, UUID playerUuid) {
+        if (!isAvailable()) return false;
+        String serverId = RedisSync.getInstance().getServerId();
+
+        try (Connection conn = dataSource.getConnection()) {
+            boolean previousAutoCommit = conn.getAutoCommit();
+            try {
+                conn.setAutoCommit(false);
+
+                byte[] partyBytes = selectTeamDataBytesForUpdate(conn, partyTeamId);
+                if (partyBytes == null) {
+                    conn.rollback();
+                    FTBQuestsSync.LOGGER.warn(
+                            "Party-to-solo migration skipped: no party teamdata party={} player={}",
+                            partyTeamId, playerUuid);
+                    return false;
+                }
+
+                LockedTeamDataRow soloRow = selectTeamDataRowForUpdate(conn, playerUuid);
+                CompoundTag partyTag = NbtCompat.readCompressed(new ByteArrayInputStream(partyBytes));
+                RankSoloProgress.stripRankSharedProgress(partyTag);
+                int partyCompleted = completedEntryCount(partyTag);
+                int soloCompleted = -1;
+                String blobDecision;
+                boolean shouldWriteParty;
+
+                if (soloRow == null) {
+                    shouldWriteParty = true;
+                    blobDecision = "copy_party_no_solo_row";
+                } else {
+                    CompoundTag soloTag = NbtCompat.readCompressed(new ByteArrayInputStream(soloRow.data));
+                    soloCompleted = completedEntryCount(soloTag);
+                    shouldWriteParty = soloCompleted <= partyCompleted;
+                    blobDecision = shouldWriteParty ? "copy_party_not_poorer" : "keep_richer_solo";
+                }
+
+                int blobRows = 0;
+                if (shouldWriteParty) {
+                    SerializedTeamData serialized = serializeTeamData(partyTag);
+                    if (soloRow != null && hashesEqual(soloRow.hash, serialized.hash)) {
+                        blobDecision = "keep_already_current";
+                    } else {
+                        try (PreparedStatement ps = conn.prepareStatement(SQL_UPSERT)) {
+                            ps.setString(1, playerUuid.toString());
+                            ps.setBytes(2, serialized.bytes);
+                            ps.setBytes(3, serialized.hash);
+                            ps.setString(4, serverId);
+                            blobRows = ps.executeUpdate();
+                        }
+                    }
+                }
+
+                int clonedScopes;
+                try (PreparedStatement ps = conn.prepareStatement(SQL_CLONE_TEAM_SCOPED_CLAIMS)) {
+                    ps.setString(1, playerUuid.toString());
+                    ps.setString(2, partyTeamId.toString());
+                    clonedScopes = ps.executeUpdate();
+                }
+
+                int membershipRows;
+                try (PreparedStatement ps = conn.prepareStatement(SQL_UPSERT_MEMBERSHIP)) {
+                    ps.setString(1, playerUuid.toString());
+                    ps.setString(2, playerUuid.toString());
+                    ps.setString(3, "OWNER");
+                    ps.setString(4, serverId);
+                    membershipRows = ps.executeUpdate();
+                }
+
+                conn.commit();
+                FTBQuestsSync.LOGGER.info(
+                        "Party-to-solo migration committed: party={} player={} decision={} partyCompleted={} soloCompleted={} soloRevision={} blobRows={} scopesCloned={} membershipRows={}",
+                        partyTeamId, playerUuid, blobDecision, partyCompleted, soloCompleted,
+                        soloRow == null ? 0L : soloRow.revision, blobRows, clonedScopes, membershipRows);
+                return blobRows > 0 || clonedScopes > 0;
+            } catch (Exception e) {
+                try {
+                    conn.rollback();
+                } catch (Exception rollbackError) {
+                    FTBQuestsSync.LOGGER.warn(
+                            "Party-to-solo migration rollback failed party={} player={}",
+                            partyTeamId, playerUuid, rollbackError);
+                }
+                throw e;
+            } finally {
+                try {
+                    conn.setAutoCommit(previousAutoCommit);
+                } catch (Exception restoreError) {
+                    FTBQuestsSync.LOGGER.warn(
+                            "Party-to-solo migration autocommit restore failed party={} player={}",
+                            partyTeamId, playerUuid, restoreError);
+                }
+            }
+        } catch (Exception e) {
+            FTBQuestsSync.LOGGER.error("Party-to-solo migration failed party={} player={}", partyTeamId, playerUuid, e);
+            return false;
+        }
+    }
+
+    public CompletableFuture<SaveResult> migratePartyMemberToSoloAsync(UUID partyTeamId, UUID playerUuid) {
+        if (!isAvailable()) return CompletableFuture.completedFuture(null);
+        try {
+            return CompletableFuture.supplyAsync(() -> {
+                boolean migrated = migratePartyMemberToSolo(partyTeamId, playerUuid);
+                return migrated ? loadMetaForPublish(playerUuid) : null;
+            }, dbExecutor);
+        } catch (Exception e) {
+            FTBQuestsSync.LOGGER.warn(
+                    "DB queue full; cannot migrate party member to solo party={} player={}",
+                    partyTeamId, playerUuid, e);
+            return CompletableFuture.completedFuture(null);
+        }
+    }
+
+    public void migratePartyToSoloMembers(UUID partyTeamId, Collection<UUID> memberUuids) {
+        if (!isAvailable() || memberUuids == null || memberUuids.isEmpty()) return;
+        List<UUID> members = new ArrayList<>(memberUuids);
+        for (UUID memberUuid : members) {
+            if (memberUuid == null) continue;
+            migratePartyMemberToSoloAsync(partyTeamId, memberUuid).whenComplete((result, error) -> {
+                if (error != null) {
+                    FTBQuestsSync.LOGGER.error(
+                            "Party-to-solo async migration failed party={} player={}",
+                            partyTeamId, memberUuid, error);
+                    return;
+                }
+                if (result != null) {
+                    RedisSync.getInstance().publishTeamUpdate(result.teamId, result.revision, result.hashHex);
+                }
+            });
+        }
+    }
+
+    private byte[] selectTeamDataBytesForUpdate(Connection conn, UUID teamId) throws Exception {
+        try (PreparedStatement ps = conn.prepareStatement(SQL_SELECT_TEAMDATA_FOR_UPDATE)) {
+            ps.setString(1, teamId.toString());
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getBytes(1) : null;
+            }
+        }
+    }
+
+    private LockedTeamDataRow selectTeamDataRowForUpdate(Connection conn, UUID teamId) throws Exception {
+        try (PreparedStatement ps = conn.prepareStatement(SQL_SELECT_TEAMDATA_META_FOR_UPDATE)) {
+            ps.setString(1, teamId.toString());
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+                return new LockedTeamDataRow(rs.getBytes(1), rs.getLong(2), rs.getBytes(3));
+            }
+        }
+    }
+
+    private SerializedTeamData serializeTeamData(CompoundTag tag) throws Exception {
+        ByteArrayOutputStream buf = new ByteArrayOutputStream();
+        NbtCompat.writeCompressed(tag, buf);
+        byte[] bytes = buf.toByteArray();
+        return new SerializedTeamData(bytes, MessageDigest.getInstance("SHA-256").digest(bytes));
+    }
+
+    private int completedEntryCount(CompoundTag tag) {
+        return tag == null ? 0 : tag.getCompound("completed").size();
+    }
+
+    private boolean hashesEqual(byte[] first, byte[] second) {
+        return first != null && second != null && MessageDigest.isEqual(first, second);
+    }
+
+    private SaveResult loadMetaForPublish(UUID teamId) {
+        if (!isAvailable()) return null;
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(SQL_SELECT)) {
+            ps.setString(1, teamId.toString());
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+                byte[] hash = rs.getBytes(5);
+                if (hash == null) {
+                    hash = MessageDigest.getInstance("SHA-256").digest(rs.getBytes(1));
+                }
+                return new SaveResult(teamId, rs.getLong(4), HexFormat.of().formatHex(hash));
+            }
+        } catch (Exception e) {
+            FTBQuestsSync.LOGGER.error("loadMetaForPublish failed team={}", teamId, e);
             return null;
         }
     }
