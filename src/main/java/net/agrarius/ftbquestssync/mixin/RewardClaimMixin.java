@@ -173,6 +173,7 @@ public abstract class RewardClaimMixin {
 
     @Inject(method = "resetReward(Ljava/util/UUID;Ldev/ftb/mods/ftbquests/quest/reward/Reward;)Z", at = @At("RETURN"))
     private void ftbQuestsSync$onResetReward(UUID claimUuid, Reward reward, CallbackInfoReturnable<Boolean> cir) {
+        if (!FTBQuestsSync.serverStarted) return;
         if (file == null || !file.isServerSide() || reward == null || !Boolean.TRUE.equals(cir.getReturnValue())) return;
         long chapterId = reward.getQuest().getChapter() != null ? reward.getQuest().getChapter().getId() : 0L;
         boolean teamClaimOverride = Config.teamClaimChapterIds.contains(chapterId);
@@ -186,6 +187,7 @@ public abstract class RewardClaimMixin {
 
     @Inject(method = "deleteReward(Ldev/ftb/mods/ftbquests/quest/reward/Reward;)V", at = @At("RETURN"))
     private void ftbQuestsSync$onDeleteReward(Reward reward, CallbackInfo ci) {
+        if (!FTBQuestsSync.serverStarted) return;
         if (file == null || !file.isServerSide() || reward == null) return;
         MySQLBackend.getInstance().deleteAllClaimsForRewardAsync(teamId, reward.id);
     }
