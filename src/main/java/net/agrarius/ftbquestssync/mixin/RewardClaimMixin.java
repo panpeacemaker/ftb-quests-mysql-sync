@@ -104,6 +104,11 @@ public abstract class RewardClaimMixin {
             return;
         }
 
+        if (rankQuestReward && !RankSoloProgress.isPlayerSoloQuestComplete(player.getUUID(), reward.getQuest())) {
+            ci.cancel();
+            return;
+        }
+
         if (soloScopedReward && !teamClaimOverride && RankSoloProgress.isRepeatableSoloQuest(reward.getQuest().id)) {
             FTBQuestsSync.LOGGER.info(
                     "Bypassing DB reward dedupe for repeatable solo reward: player={} team={} quest={} reward={}",
@@ -156,8 +161,12 @@ public abstract class RewardClaimMixin {
             cancellable = true)
     private void ftbQuestsSync$rankSoloClaimType(UUID playerUuid, Reward reward, CallbackInfoReturnable<RewardClaimType> cir) {
         if (file == null || !file.isServerSide() || reward == null || !RankSoloProgress.isRankQuest(reward.getQuest().id)) return;
-        if (cir.getReturnValue() == RewardClaimType.CANT_CLAIM
-                && RankSoloProgress.isPlayerSoloQuestComplete(playerUuid, reward.getQuest())) {
+        boolean playerComplete = RankSoloProgress.isPlayerSoloQuestComplete(playerUuid, reward.getQuest());
+        if (!playerComplete) {
+            cir.setReturnValue(RewardClaimType.CANT_CLAIM);
+            return;
+        }
+        if (cir.getReturnValue() == RewardClaimType.CANT_CLAIM) {
             cir.setReturnValue(RewardClaimType.CAN_CLAIM);
         }
     }

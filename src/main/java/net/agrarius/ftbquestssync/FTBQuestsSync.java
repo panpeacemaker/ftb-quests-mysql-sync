@@ -14,6 +14,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import net.minecraft.server.level.ServerPlayer;
 
+import dev.ftb.mods.ftbquests.quest.TeamData;
+import net.agrarius.ftbquestssync.access.TeamDataAccess;
+
 @Mod(FTBQuestsSync.MOD_ID)
 public class FTBQuestsSync {
 
@@ -26,7 +29,7 @@ public class FTBQuestsSync {
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {
-        LOGGER.info("FTB Quests Sync 1.0.32 booting");
+        LOGGER.info("FTB Quests Sync 1.1.1 booting");
         Config.reload();
         MySQLBackend.getInstance().initialize();
         if (Config.syncTeams) {
@@ -51,7 +54,7 @@ public class FTBQuestsSync {
         RankSoloProgress.init();
         ChunkSeeder.runIfConfigured(event.getServer());
         ChunkMaterializer.materializeAllLoaded(event.getServer());
-        LOGGER.info("FTB Quests Sync 1.0.32 ready (mysqlAvailable={}, redisEnabled={}, teamsRedisEnabled={}, serverId={})",
+        LOGGER.info("FTB Quests Sync 1.1.1 ready (mysqlAvailable={}, redisEnabled={}, teamsRedisEnabled={}, serverId={})",
                 MySQLBackend.getInstance().isAvailable(),
                 RedisSync.getInstance().isEnabled(),
                 TeamSync.getInstance().isEnabled(),
@@ -80,6 +83,27 @@ public class FTBQuestsSync {
             ChunkMaterializer.materializeOnLogin(player);
         } catch (Exception e) {
             LOGGER.warn("Login handler failed for {}", player.getUUID(), e);
+        }
+    }
+
+    @SubscribeEvent
+    public void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) {
+        if (!(event.getEntity() instanceof ServerPlayer player)) return;
+        if (player.isRemoved()) return;
+        if (!Config.syncQuests) return;
+        try {
+            TeamData data = TeamData.get(player);
+            if (data == null) return;
+            if (!(data instanceof TeamDataAccess access)) {
+                LOGGER.warn("Logout force-save skipped: TeamDataAccess mixin bridge is unavailable for player={}", player.getUUID());
+                return;
+            }
+
+            LOGGER.info("Player logout: player={} team={} — force-saving team data", player.getUUID(), data.getTeamId());
+            access.ftbQuestsSync$requestForceSave();
+            data.markDirty();
+        } catch (Exception e) {
+            LOGGER.warn("Player logout force-save failed for player={}", player.getUUID(), e);
         }
     }
 

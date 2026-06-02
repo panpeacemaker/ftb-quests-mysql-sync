@@ -37,7 +37,7 @@ public abstract class RankSoloTeamDataMixin {
         RankSoloProgress.handleRankTaskProgress((TeamData) (Object) this, player, task, progress);
         if (task.getQuest() != null
                 && task.getQuest().getChapter() != null
-                && Config.repeatableSoloChapterIds.contains(task.getQuest().getChapter().getId())) {
+                && Config.teamClaimChapterIds.contains(task.getQuest().getChapter().getId())) {
             FTBQuestsSync.LOGGER.info(
                     "Allowing vanilla FTB repeatable solo progress: player={} quest={} task={} progress={}",
                     player.getUUID(), task.getQuest().id, task.id, progress);

@@ -184,15 +184,15 @@ public class RedisSync {
             if (seenEvents.putIfAbsent(event.eventId, System.currentTimeMillis()) != null) return;
             if (server == null) return;
 
-            FTBQuestsSync.LOGGER.info("Received remote Redis team update: source={} team={} revision={} hash={}",
-                    event.sourceServer, event.teamId, event.revision, event.hashHex);
+            FTBQuestsSync.LOGGER.info("Received remote Redis team update: source={} team={} revision={} hash={} forceReplace={}",
+                    event.sourceServer, event.teamId, event.revision, event.hashHex, event.forceReplace);
             MySQLBackend.getInstance().loadTeamDataAsync(event.teamId).whenComplete((fresh, error) -> {
                 if (error != null) {
                     FTBQuestsSync.LOGGER.error("Async MySQL load failed for remote team {}", event.teamId, error);
                     return;
                 }
                 if (fresh == null) return;
-                server.execute(() -> applyRemoteUpdate(event.teamId, fresh));
+                server.execute(() -> applyRemoteUpdate(event.teamId, fresh, event.forceReplace));
             });
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("Bad Redis message: {}", message, e);
@@ -218,14 +218,15 @@ public class RedisSync {
             int colon = message.indexOf(':');
             if (colon <= 0) return null;
             return new RemoteEvent(UUID.randomUUID(), message.substring(0, colon),
-                    UUID.fromString(message.substring(colon + 1)), -1L, "");
+                    UUID.fromString(message.substring(colon + 1)), -1L, "", false);
         }
         UUID eventId = UUID.fromString(jsonValue(trimmed, "eventId"));
         String sourceServer = jsonValue(trimmed, "sourceServer");
         UUID teamId = UUID.fromString(jsonValue(trimmed, "entityId"));
         long revision = Long.parseLong(jsonNumber(trimmed, "revision", "-1"));
         String hash = jsonValue(trimmed, "hash");
-        return new RemoteEvent(eventId, sourceServer, teamId, revision, hash);
+        boolean forceReplace = jsonBool(trimmed, "forceReplace");
+        return new RemoteEvent(eventId, sourceServer, teamId, revision, hash, forceReplace);
     }
 
     private static String jsonValue(String json, String key) {
@@ -247,6 +248,16 @@ public class RedisSync {
         return end == start ? fallback : json.substring(start, end);
     }
 
+    private static boolean jsonBool(String json, String key) {
+        int k = json.indexOf("\"" + key + "\"");
+        if (k < 0) return false;
+        int colon = json.indexOf(':', k);
+        if (colon < 0) return false;
+        int i = colon + 1;
+        while (i < json.length() && Character.isWhitespace(json.charAt(i))) i++;
+        return json.startsWith("true", i) || json.startsWith("\"true\"", i);
+    }
+
     private static String escapeJson(String value) {
         return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
@@ -257,13 +268,15 @@ public class RedisSync {
         private final UUID teamId;
         private final long revision;
         private final String hashHex;
+        private final boolean forceReplace;
 
-        private RemoteEvent(UUID eventId, String sourceServer, UUID teamId, long revision, String hashHex) {
+        private RemoteEvent(UUID eventId, String sourceServer, UUID teamId, long revision, String hashHex, boolean forceReplace) {
             this.eventId = eventId;
             this.sourceServer = sourceServer;
             this.teamId = teamId;
             this.revision = revision;
             this.hashHex = hashHex;
+            this.forceReplace = forceReplace;
         }
     }
 
@@ -322,7 +335,7 @@ public class RedisSync {
         });
     }
 
-    private void applyRemoteUpdate(UUID teamId, CompoundTag fresh) {
+    private void applyRemoteUpdate(UUID teamId, CompoundTag fresh, boolean forceReplace) {
         try {
             if (!Config.syncQuests) return;
 
@@ -338,7 +351,7 @@ public class RedisSync {
             // Declare merged here so it's accessible in the lambda below
             CompoundTag merged = null;
 
-            if (existing != null) {
+            if (existing != null && !forceReplace) {
                 // MERGE local + remote so concurrent edits across servers don't
                 // erase each other. Without this, last-writer-wins replacement
                 // wipes completions made between local save and remote receive.
@@ -376,6 +389,20 @@ public class RedisSync {
                         FTBQuestsSync.LOGGER.debug("Could not mark merged team {} dirty", teamId, e);
                     }
                 }
+            } else if (existing != null) {
+                merged = fresh;
+                TeamData replaceStaging = new TeamData(teamId, file);
+                replaceStaging.deserializeNBT(SNBTCompoundTag.of(fresh));
+                try {
+                    existing.deserializeNBT(SNBTCompoundTag.of(replaceStaging.serializeNBT()));
+                } catch (Exception rollbackEx) {
+                    FTBQuestsSync.LOGGER.error(
+                            "Rollback: applyRemoteUpdate could not write replacement state into live team={} — remote update dropped",
+                            teamId, rollbackEx);
+                    return;
+                }
+                teamData = existing;
+                FTBQuestsSync.LOGGER.info("forceReplace applied to team {}", teamId);
             } else {
                 merged = fresh;
                 teamData = new TeamData(teamId, file);
@@ -385,7 +412,7 @@ public class RedisSync {
 
             MySQLBackend.setTeamLoadState(teamId, MySQLBackend.TeamLoadState.LOADED);
             clearRewardsBlocked(teamData);
-            boolean advancedShopCycle = localBeforeMerge != null && hasAdvancedShopCycle(localBeforeMerge, fresh, file);
+            boolean advancedShopCycle = !forceReplace && localBeforeMerge != null && hasAdvancedShopCycle(localBeforeMerge, fresh, file);
             int forcedShopResets = ShopRepeatableSync.resetAllCompleteShopQuests(teamData);
             final TeamData finalTeamData = teamData;
             final boolean finalMerged = mergedLocalProgress;
@@ -467,14 +494,14 @@ public class RedisSync {
                     }
 
                     FTBQuestsSync.LOGGER.info(
-                            "Applied remote team update: team={} players={} mergedLocalProgress={} forcedShopResets={} completed={} progress={}",
-                            teamId, members.size(), finalMerged, finalForcedShopResets,
+                            "Applied remote team update: team={} players={} forceReplace={} mergedLocalProgress={} forcedShopResets={} completed={} progress={}",
+                            teamId, members.size(), forceReplace, finalMerged, finalForcedShopResets,
                             finalDeltaSnapshot.getCompound("completed").size(),
                             finalDeltaSnapshot.getCompound("task_progress").size());
                 } else {
                     FTBQuestsSync.LOGGER.info(
-                            "Applied remote team update: team={} no online members mergedLocalProgress={} forcedShopResets={}",
-                            teamId, finalMerged, finalForcedShopResets);
+                            "Applied remote team update: team={} no online members forceReplace={} mergedLocalProgress={} forcedShopResets={}",
+                            teamId, forceReplace, finalMerged, finalForcedShopResets);
                 }
             });
         } catch (Exception e) {

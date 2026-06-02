@@ -19,8 +19,10 @@ import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPubSub;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -136,9 +138,14 @@ public final class TeamSync {
     private void onDeleted(TeamEvent ev) {
         if (!Config.syncTeams) return;
         Team team = ev.getTeam();
-        if (TeamMutationGuard.isTeamSuppressed(team.getId())) return;
-        MySQLBackend.getInstance().markTeamDeletedAsync(team.getId());
-        publish("deleted", team.getId());
+        UUID teamId = team.getId();
+        if (TeamMutationGuard.isTeamSuppressed(teamId)) return;
+        List<UUID> memberUuids = MySQLBackend.getInstance().selectTeamMembers(teamId).stream()
+                .map(MySQLBackend.TeamMemberRow::playerUuid)
+                .toList();
+        MySQLBackend.getInstance().migratePartyToSoloMembers(teamId, memberUuids);
+        MySQLBackend.getInstance().markTeamDeletedAsync(teamId);
+        publish("deleted", teamId);
     }
 
     private void onJoinedParty(PlayerJoinedPartyTeamEvent ev) {
@@ -160,8 +167,9 @@ public final class TeamSync {
     private void onLeftParty(PlayerLeftPartyTeamEvent ev) {
         if (!Config.syncTeams) return;
         Team partyTeam = ev.getTeam();
+        UUID partyTeamId = partyTeam.getId();
         UUID playerId = ev.getPlayer().getUUID();
-        if (TeamMutationGuard.isTeamSuppressed(partyTeam.getId())) return;
+        if (TeamMutationGuard.isTeamSuppressed(partyTeamId)) return;
         TeamManager mgr = FTBTeamsAPI.api().getManager();
         Team playerTeam = mgr.getPlayerTeamForPlayerID(playerId).orElse(null);
         UUID targetTeamId = playerTeam == null ? playerId : playerTeam.getId();
@@ -172,7 +180,8 @@ public final class TeamSync {
                         FTBQuestsSync.LOGGER.error("kick solo-persist failed player={}", playerId, e);
                         return;
                     }
-                    publish("member_kick", partyTeam.getId(), playerId);
+                    migrateMemberQuestStateToSolo(partyTeamId, playerId);
+                    publish("member_kick", partyTeamId, playerId);
                 });
     }
 
@@ -200,6 +209,7 @@ public final class TeamSync {
                             FTBQuestsSync.LOGGER.error("kick solo-persist failed player={}", playerId, e);
                             return;
                         }
+                        migrateMemberQuestStateToSolo(previousPartyId, playerId);
                         TeamSync.getInstance().publishMemberKick(previousPartyId, playerId);
                     });
             return;
@@ -217,8 +227,26 @@ public final class TeamSync {
         if (!Config.syncTeams) return;
         Team team = ev.getTeam();
         if (TeamMutationGuard.isTeamSuppressed(team.getId())) return;
-        persistTeam(team);
-        publish("owner_transfer", team.getId());
+        UUID newOwner = ev.getToProfile() == null ? null : ev.getToProfile().getId();
+        if (newOwner == null) newOwner = team.getOwner();
+        if (newOwner == null) {
+            FTBQuestsSync.LOGGER.warn("owner_transfer skipped: team={} has no new owner", team.getId());
+            return;
+        }
+        UUID owner = newOwner;
+        persistTeamFuture(team).thenApply(ignored -> MySQLBackend.getInstance().updateTeamOwner(team.getId(), owner))
+                .whenComplete((updated, e) -> {
+                    if (e != null) {
+                        FTBQuestsSync.LOGGER.error("owner_transfer persist failed team={} owner={}", team.getId(), owner, e);
+                        return;
+                    }
+                    if (!Boolean.TRUE.equals(updated)) {
+                        FTBQuestsSync.LOGGER.warn("owner_transfer not published: DB owner update failed team={} owner={}",
+                                team.getId(), owner);
+                        return;
+                    }
+                    publish("owner_transfer", team.getId());
+                });
     }
 
     private void onPlayerLoggedIn(PlayerLoggedInAfterTeamEvent ev) {
@@ -229,12 +257,21 @@ public final class TeamSync {
         Team team = ev.getTeam();
         if (TeamMutationGuard.isTeamSuppressed(team.getId())) return;
         if (!Config.syncTeams) return;
-        persistTeam(team);
         String name = readName(team);
         String color = readColor(team);
-        if (updatePropsCache(team.getId(), name, color)) {
-            publish("props", team.getId());
-        }
+        String oldColor = cachedColor(team.getId());
+        persistTeamFuture(team).whenComplete((ignored, e) -> {
+            if (e != null) {
+                FTBQuestsSync.LOGGER.error("props persist failed team={}", team.getId(), e);
+                return;
+            }
+            if (updatePropsCache(team.getId(), name, color)) {
+                publish("props", team.getId());
+            }
+            if (!Objects.equals(oldColor, color)) {
+                ChunkMaterializer.refreshTeamClaims(team.getId());
+            }
+        });
     }
 
     public void reconcileOnLogin(net.minecraft.server.level.ServerPlayer player) {
@@ -318,19 +355,30 @@ public final class TeamSync {
         persistTeam(team, true);
     }
 
+    private CompletableFuture<Void> persistTeamFuture(Team team) {
+        if (team == null) return CompletableFuture.completedFuture(null);
+        String type = teamType(team);
+        String name = readName(team);
+        String color = readColor(team);
+        UUID owner = team.getOwner();
+        return MySQLBackend.getInstance().upsertTeamInfoFuture(team.getId(), type, name, owner, color);
+    }
+
     private void persistTeam(Team team, boolean async) {
         if (team == null) return;
-        String type;
-        if (team.isPartyTeam()) type = "PARTY";
-        else if (team.isServerTeam()) type = "SERVER";
-        else if (team.isPlayerTeam()) type = "PLAYER";
-        else type = "UNKNOWN";
-
+        String type = teamType(team);
         String name = readName(team);
         String color = readColor(team);
         UUID owner = team.getOwner();
         if (async) MySQLBackend.getInstance().upsertTeamInfoAsync(team.getId(), type, name, owner, color);
         else MySQLBackend.getInstance().upsertTeamInfo(team.getId(), type, name, owner, color);
+    }
+
+    private static String teamType(Team team) {
+        if (team.isPartyTeam()) return "PARTY";
+        if (team.isServerTeam()) return "SERVER";
+        if (team.isPlayerTeam()) return "PLAYER";
+        return "UNKNOWN";
     }
 
     private static String readName(Team team) {
@@ -354,6 +402,21 @@ public final class TeamSync {
     private void persistMembership(UUID playerId, Team team) {
         if (team == null) return;
         MySQLBackend.getInstance().upsertMembershipAsync(playerId, team.getId(), rankName(team, playerId));
+    }
+
+    private void migrateMemberQuestStateToSolo(UUID partyTeamId, UUID playerId) {
+        MySQLBackend.getInstance().migratePartyMemberToSoloAsync(partyTeamId, playerId)
+                .whenComplete((result, error) -> {
+                    if (error != null) {
+                        FTBQuestsSync.LOGGER.error(
+                                "Party-to-solo quest migration failed party={} player={}",
+                                partyTeamId, playerId, error);
+                        return;
+                    }
+                    if (result != null) {
+                        RedisSync.getInstance().publishTeamUpdate(playerId, result.revision, result.hashHex);
+                    }
+                });
     }
 
     private static String rankName(Team team, UUID playerId) {
@@ -508,6 +571,7 @@ public final class TeamSync {
         if (team == null) return;
 
         boolean changed = false;
+        boolean colorChanged = false;
         try (TeamMutationGuard.Scope ignored = TeamMutationGuard.suppressTeam(teamId)) {
             if (info.name() != null && !Objects.equals(readName(team), info.name())) {
                 team.setProperty(TeamProperties.DISPLAY_NAME, info.name());
@@ -519,10 +583,12 @@ public final class TeamSync {
                 if (parsedColor.isPresent()) {
                     team.setProperty(TeamProperties.COLOR, parsedColor.get());
                     changed = true;
+                    colorChanged = true;
                 }
             }
         }
         if (changed) TeamMaterializer.markTeamDirtyAndSync(mgr, team);
+        if (colorChanged) ChunkMaterializer.refreshTeamClaims(teamId);
         updatePropsCache(teamId, info.name(), info.color());
     }
 
@@ -563,6 +629,11 @@ public final class TeamSync {
     private boolean updatePropsCache(UUID teamId, String name, String color) {
         String[] previous = lastSyncedProps.put(teamId, new String[]{name, color});
         return previous == null || !Objects.equals(previous[0], name) || !Objects.equals(previous[1], color);
+    }
+
+    private String cachedColor(UUID teamId) {
+        String[] cached = lastSyncedProps.get(teamId);
+        return cached != null ? cached[1] : null;
     }
 
     private static GameProfile profileFor(MinecraftServer server, UUID playerId) {
