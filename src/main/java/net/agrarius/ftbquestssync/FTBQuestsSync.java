@@ -22,6 +22,7 @@ public class FTBQuestsSync {
 
     public static final String MOD_ID = "ftbquestssync";
     public static final Logger LOGGER = LoggerFactory.getLogger("FTBQuestsSync");
+    public static volatile boolean serverStarted = false;
 
     public FTBQuestsSync() {
         FMLJavaModLoadingContext.get().getModEventBus().addListener(this::commonSetup);
@@ -29,7 +30,7 @@ public class FTBQuestsSync {
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {
-        LOGGER.info("FTB Quests Sync 1.1.1 booting");
+        LOGGER.info("FTB Quests Sync 1.1.2 booting");
         Config.reload();
         MySQLBackend.getInstance().initialize();
         if (Config.syncTeams) {
@@ -54,11 +55,12 @@ public class FTBQuestsSync {
         RankSoloProgress.init();
         ChunkSeeder.runIfConfigured(event.getServer());
         ChunkMaterializer.materializeAllLoaded(event.getServer());
-        LOGGER.info("FTB Quests Sync 1.1.1 ready (mysqlAvailable={}, redisEnabled={}, teamsRedisEnabled={}, serverId={})",
+        LOGGER.info("FTB Quests Sync 1.1.2 ready (mysqlAvailable={}, redisEnabled={}, teamsRedisEnabled={}, serverId={})",
                 MySQLBackend.getInstance().isAvailable(),
                 RedisSync.getInstance().isEnabled(),
                 TeamSync.getInstance().isEnabled(),
                 RedisSync.getInstance().getServerId());
+        serverStarted = true;
     }
 
     @SubscribeEvent
