@@ -48,7 +48,7 @@ public final class Config {
     public static String conflictPolicy = "reload_remote";
     public static String policyMode = "blacklist";
     public static Set<Long> soloChapterIds = Set.of(0x3622ED01311E6763L, 0x67F6F5055518AC4FL);
-    public static Set<Long> repeatableSoloChapterIds = Set.of(0x3622ED01311E6763L);
+    public static Set<Long> repeatableSoloChapterIds = Set.of();
     public static Set<Long> soloQuestIds = Set.of();
     public static Set<Long> soloTaskIds = Set.of();
     public static Set<Long> teamClaimChapterIds = Set.of(0x3CEC7F7BAD54E4C6L);

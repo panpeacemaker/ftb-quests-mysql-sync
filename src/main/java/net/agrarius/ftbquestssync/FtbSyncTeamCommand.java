@@ -89,20 +89,32 @@ public final class FtbSyncTeamCommand {
         GameProfile target = new GameProfile(targetId, targetName);
         MySQLBackend db = MySQLBackend.getInstance();
         requireDb(db);
-        MySQLBackend.TeamInfoRow info = db.selectTeamInfo(ctx.team().getId()).orElse(null);
+        UUID partyTeamId = ctx.team().getId();
+        MySQLBackend.TeamInfoRow info = db.selectTeamInfo(partyTeamId).orElse(null);
         UUID owner = info != null && info.owner() != null ? info.owner() : ctx.team().getOwner();
         if (targetId.equals(owner)) throw OWNER_KICK.create();
         MySQLBackend.TeamMembershipRow membership = db.selectMembership(targetId).orElse(null);
-        if (membership == null || !ctx.team().getId().equals(membership.teamId())) throw NOT_MEMBER.create();
+        if (membership == null || !partyTeamId.equals(membership.teamId())) throw NOT_MEMBER.create();
 
         db.upsertMembership(targetId, targetId, "OWNER");
-        TeamSync.getInstance().publishMemberKick(ctx.team().getId(), targetId);
+        db.migratePartyMemberToSoloAsync(partyTeamId, targetId).whenComplete((result, err) -> {
+            if (err != null) {
+                FTBQuestsSync.LOGGER.error(
+                        "Party-to-solo quest migration failed party={} player={}",
+                        partyTeamId, targetId, err);
+                return;
+            }
+            if (result != null) {
+                RedisSync.getInstance().publishTeamUpdate(targetId, result.revision, result.hashHex);
+            }
+        });
+        TeamSync.getInstance().publishMemberKick(partyTeamId, targetId);
         db.loadTeamMaterializationAsync(targetId).whenComplete((row, err) -> {
             if (err != null) {
                 FTBQuestsSync.LOGGER.warn("Local kick reconcile DB reload failed player={}", targetId, err);
                 return;
             }
-            ctx.server().execute(() -> applyMemberKickLocal(ctx.server(), ctx.team().getId(), targetId, row));
+            ctx.server().execute(() -> applyMemberKickLocal(ctx.server(), partyTeamId, targetId, row));
         });
         source.sendSuccess(() -> Component.literal("FTB Sync kick queued for " + target.getName()), false);
         return Command.SINGLE_SUCCESS;
@@ -206,10 +218,7 @@ public final class FtbSyncTeamCommand {
 
         try (TeamMutationGuard.Scope teamScope = TeamMutationGuard.suppressTeam(teamId);
              TeamMutationGuard.Scope playerScope = TeamMutationGuard.suppressPlayer(newOwner.getId())) {
-            for (MySQLBackend.TeamMemberRow member : members) {
-                TeamMaterializer.addPlayerToTeamReflective(team, member.playerUuid(), member.rank());
-            }
-            TeamMaterializer.addPlayerToTeamReflective(team, newOwner.getId(), "OWNER");
+            TeamMaterializer.applyMembershipSnapshot(team, members, newOwner.getId());
             changed = TeamMaterializer.transferPartyOwnership(team, source, newOwner);
         }
         if (changed) TeamMaterializer.markTeamDirtyAndSync(mgr, team);
