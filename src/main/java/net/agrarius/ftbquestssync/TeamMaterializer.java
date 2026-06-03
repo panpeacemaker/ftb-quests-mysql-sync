@@ -4,14 +4,10 @@ import dev.ftb.mods.ftbteams.api.FTBTeamsAPI;
 import dev.ftb.mods.ftbteams.api.Team;
 import dev.ftb.mods.ftbteams.api.TeamManager;
 import dev.ftb.mods.ftbteams.api.TeamRank;
-import dev.ftb.mods.ftbteams.data.PartyTeam;
-import com.mojang.authlib.GameProfile;
-import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.server.level.ServerPlayer;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -60,55 +56,15 @@ public final class TeamMaterializer {
         TeamManager mgr = FTBTeamsAPI.api().getManager();
         Team existing = mgr.getTeamByID(dbTeamId).orElse(null);
 
-        // Reflective create/add below can fire synthetic TeamCreated/Joined events;
-        // pin LOADING so onCreated does not flip this DB-owned team to NEW and let
-        // empty local state overwrite the authoritative MySQL blob before reload.
-        MySQLBackend.setTeamLoadState(dbTeamId, MySQLBackend.TeamLoadState.LOADING);
-
-        if (dbTeamId.equals(playerUuid)) {
-            Team current = mgr.getTeamForPlayerID(playerUuid).orElse(null);
-            if (current != null && current.isPartyTeam() && !current.getId().equals(playerUuid)) {
-                try (TeamMutationGuard.Scope ts = TeamMutationGuard.suppressTeam(current.getId());
-                     TeamMutationGuard.Scope ps = TeamMutationGuard.suppressPlayer(playerUuid)) {
-                    Team soloTeam = mgr.getPlayerTeamForPlayerID(playerUuid).orElse(null);
-                    if (soloTeam != null) {
-                        forcePlayerToDbTeam(mgr, playerUuid, soloTeam);
-                    } else {
-                        removePlayerFromTeamReflective(current, playerUuid);
-                    }
-                    markTeamDirtyAndSync(mgr, current);
-                }
-                TeamSync.getInstance().forceFullSyncToPlayer(player, playerUuid);
-            }
-            return;
-        }
-
-        MySQLBackend.TeamInfoRow infoRow = row.info();
         if (existing != null) {
-            try (TeamMutationGuard.Scope teamScope = TeamMutationGuard.suppressTeam(dbTeamId);
-                 TeamMutationGuard.Scope playerScope = TeamMutationGuard.suppressPlayer(playerUuid)) {
+            if (!existing.getMembers().contains(playerUuid)) {
                 addPlayerToTeam(existing, playerUuid, membership.rank());
-                UUID owner = infoRow != null && infoRow.owner() != null ? infoRow.owner() : existing.getOwner();
-                applyMembershipSnapshot(existing, row.members(), owner);
-                if (infoRow != null) {
-                    applyName(existing, infoRow.name());
-                    applyColor(existing, infoRow.color());
-                }
             }
-            if (!forcePlayerToDbTeam(mgr, playerUuid, existing)) {
-                FTBQuestsSync.LOGGER.warn(
-                        "DB-team convergence failed for player={} team={} — skipping sync to avoid wrong-team state",
-                        playerUuid, dbTeamId);
-                return;
-            }
-            markTeamDirtyAndSync(mgr, existing);
-            TeamSync.getInstance().forceFullSyncToPlayer(player, dbTeamId);
-            RedisSync.getInstance().forceReloadAndPushTo(dbTeamId, player);
-            ChunkMaterializer.materializeOnLogin(player);
+            TeamSync.getInstance().forceFullSyncToPlayer(player);
             return;
         }
 
-        MySQLBackend.TeamInfoRow info = infoRow;
+        MySQLBackend.TeamInfoRow info = row.info();
         if (info == null || info.deleted()) return;
         if (!"PARTY".equals(info.type())) return;
 
@@ -118,77 +74,17 @@ public final class TeamMaterializer {
             return;
         }
 
-        if (!(created instanceof Team createdTeam)) {
-            FTBQuestsSync.LOGGER.warn("Materialized team {} is not an FTB Team instance", dbTeamId);
-            return;
+        for (MySQLBackend.TeamMemberRow m : row.members()) {
+            addPlayerToTeamReflective(created, m.playerUuid(), m.rank());
         }
-        applyMembershipSnapshot(createdTeam, row.members(), info.owner());
 
-        finalizeTeamCreation(mgr, createdTeam);
-        Team materializedTeam = mgr.getTeamByID(dbTeamId).orElse(null);
-        if (materializedTeam == null || !forcePlayerToDbTeam(mgr, playerUuid, materializedTeam)) {
-            FTBQuestsSync.LOGGER.warn(
-                    "DB-team convergence failed after create for player={} team={} — skipping sync",
-                    playerUuid, dbTeamId);
-            return;
-        }
-        applyColor(materializedTeam, info.color());
+        finalizeTeamCreation(mgr, created);
         FTBQuestsSync.LOGGER.info("Materialized team {} ({}) locally from DB for player {}",
                 dbTeamId, info.name(), playerUuid);
-        TeamSync.getInstance().forceFullSyncToPlayer(player, dbTeamId);
-        // Newly created party team — send its quest data to the player now.
-        RedisSync.getInstance().forceReloadAndPushTo(dbTeamId, player);
-        ChunkMaterializer.materializeOnLogin(player);
+        TeamSync.getInstance().forceFullSyncToPlayer(player);
     }
 
-    private static void applyName(Team team, String name) {
-        if (team == null || name == null || name.isBlank()) return;
-        try {
-            team.setProperty(dev.ftb.mods.ftbteams.api.property.TeamProperties.DISPLAY_NAME, name);
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.warn("Could not set team display name for {}", team.getId(), e);
-        }
-    }
-
-    private static void applyColor(Team team, String colorStr) {
-        if (team == null || colorStr == null || colorStr.isBlank()) return;
-        try {
-            dev.ftb.mods.ftbteams.api.property.TeamProperties.COLOR.fromString(colorStr).ifPresent(color -> {
-                try {
-                    team.setProperty(dev.ftb.mods.ftbteams.api.property.TeamProperties.COLOR, color);
-                } catch (Exception e) {
-                    FTBQuestsSync.LOGGER.warn("Could not set team color for {}", team.getId(), e);
-                }
-            });
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.debug("Could not parse team color '{}' for {}", colorStr, team.getId(), e);
-        }
-    }
-
-    public static boolean ensureTeamMaterialized(UUID teamId) {
-        TeamManager mgr = FTBTeamsAPI.api().getManager();
-        if (mgr.getTeamByID(teamId).isPresent()) return true;
-        MySQLBackend.TeamInfoRow info = MySQLBackend.getInstance().selectTeamInfo(teamId).orElse(null);
-        if (info == null || info.deleted()) {
-            FTBQuestsSync.LOGGER.warn("Cannot materialize missing team {} for chunk sync: no team_info row", teamId);
-            return false;
-        }
-        Object created = createTeamWithUuid(mgr, teamId, info.type(), info.name(), info.owner());
-        if (created == null) return false;
-        List<MySQLBackend.TeamMemberRow> members = MySQLBackend.getInstance().selectTeamMembers(teamId);
-        for (MySQLBackend.TeamMemberRow member : members) {
-            addPlayerToTeamReflective(created, member.playerUuid(), member.rank());
-        }
-        if (created instanceof Team materialized) {
-            applyMembershipSnapshot(materialized, members, info.owner());
-        }
-        finalizeTeamCreation(mgr, created);
-        boolean ok = mgr.getTeamByID(teamId).isPresent();
-        FTBQuestsSync.LOGGER.info("ensureTeamMaterialized for chunks: team={} type={} ok={}", teamId, info.type(), ok);
-        return ok;
-    }
-
-    public static Object createTeamWithUuid(TeamManager mgr, UUID teamId, String type, String name, UUID owner) {
+    private static Object createTeamWithUuid(TeamManager mgr, UUID teamId, String type, String name, UUID owner) {
         try {
             Class<?> mgrImplCls = Class.forName("dev.ftb.mods.ftbteams.data.TeamManagerImpl");
             Class<?> typeCls = Class.forName("dev.ftb.mods.ftbteams.data.TeamType");
@@ -225,180 +121,23 @@ public final class TeamMaterializer {
         addPlayerToTeamReflective(team, playerUuid, rank);
     }
 
-    public static void applyMembershipSnapshot(Team team, List<MySQLBackend.TeamMemberRow> members, UUID ownerUuid) {
-        if (team == null) return;
-        if (ownerUuid != null && team instanceof PartyTeam) {
-            setPartyOwnerReflective(team, ownerUuid);
-        }
-        try {
-            Class<?> baseCls = Class.forName("dev.ftb.mods.ftbteams.data.AbstractTeamBase");
-            Field ranksField = baseCls.getDeclaredField("ranks");
-            ranksField.setAccessible(true);
-            Object ranksObj = ranksField.get(team);
-            if (!(ranksObj instanceof Map<?, ?> ranks)) {
-                FTBQuestsSync.LOGGER.warn("applyMembershipSnapshot ranks field was not a map team={}", team.getId());
-                return;
-            }
-
-            ranks.clear();
-            if (members != null) {
-                for (MySQLBackend.TeamMemberRow member : members) {
-                    addPlayerToTeamReflective(team, member.playerUuid(), member.rank());
-                }
-            }
-            if (ownerUuid != null) {
-                addPlayerToTeamReflective(team, ownerUuid, "OWNER");
-                java.util.List<UUID> ownersToDemote = new java.util.ArrayList<>();
-                for (Map.Entry<?, ?> entry : ranks.entrySet()) {
-                    if (entry.getKey() instanceof UUID playerUuid
-                            && !ownerUuid.equals(playerUuid)
-                            && entry.getValue() == TeamRank.OWNER) {
-                        ownersToDemote.add(playerUuid);
-                    }
-                }
-                for (UUID playerUuid : ownersToDemote) {
-                    addPlayerToTeamReflective(team, playerUuid, "MEMBER");
-                }
-            }
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.warn("applyMembershipSnapshot reflection failed team={} owner={}",
-                    team.getId(), ownerUuid, e);
-        }
-    }
-
     @SuppressWarnings("unchecked")
-    public static void addPlayerToTeamReflective(Object team, UUID playerUuid, String rank) {
+    private static void addPlayerToTeamReflective(Object team, UUID playerUuid, String rank) {
         try {
             Class<?> baseCls = Class.forName("dev.ftb.mods.ftbteams.data.AbstractTeamBase");
             Field ranksField = baseCls.getDeclaredField("ranks");
             ranksField.setAccessible(true);
             Map<UUID, TeamRank> ranks = (Map<UUID, TeamRank>) ranksField.get(team);
 
-            ranks.put(playerUuid, parseRank(rank));
+            TeamRank parsed;
+            try {
+                parsed = TeamRank.valueOf(rank);
+            } catch (Exception e) {
+                parsed = TeamRank.MEMBER;
+            }
+            ranks.put(playerUuid, parsed);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.error("addPlayerToTeam reflection failed player={} rank={}", playerUuid, rank, e);
-        }
-    }
-
-    private static TeamRank parseRank(String rank) {
-        try {
-            return TeamRank.valueOf(rank);
-        } catch (Exception e) {
-            return TeamRank.MEMBER;
-        }
-    }
-
-    private static boolean setEffectiveTeam(TeamManager mgr, UUID playerUuid, Team partyTeam) {
-        try {
-            Object playerTeam = mgr.getPlayerTeamForPlayerID(playerUuid).orElse(null);
-            if (playerTeam == null) return false;
-            Class<?> playerTeamCls = Class.forName("dev.ftb.mods.ftbteams.data.PlayerTeam");
-            Field effectiveTeamField = playerTeamCls.getDeclaredField("effectiveTeam");
-            effectiveTeamField.setAccessible(true);
-            effectiveTeamField.set(playerTeam, partyTeam);
-            FTBQuestsSync.LOGGER.info("Set effectiveTeam={} for player={}", partyTeam.getId(), playerUuid);
-            return true;
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("setEffectiveTeam failed for player={} team={}", playerUuid, partyTeam.getId(), e);
-            return false;
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    public static boolean forcePlayerToDbTeam(TeamManager mgr, UUID playerUuid, Team dbTeam) {
-        UUID dbTeamId = dbTeam.getId();
-        try {
-            Team stale = mgr.getTeamForPlayerID(playerUuid).orElse(null);
-            // Detach from a stale DIFFERENT party first. FTB Teams resolves a
-            // player's team as PlayerTeam.effectiveTeam, so a lingering party (e.g.
-            // one deleted on a peer while this player was offline) must be removed
-            // from that party's 'ranks' map or it keeps resolving here. Mirrors
-            // FTB's own kick/leave: drop from party ranks, restore solo OWNER.
-            if (stale != null && !stale.getId().equals(dbTeamId) && stale.isPartyTeam()) {
-                Class<?> baseCls = Class.forName("dev.ftb.mods.ftbteams.data.AbstractTeamBase");
-                Field ranksField = baseCls.getDeclaredField("ranks");
-                ranksField.setAccessible(true);
-                ((Map<UUID, TeamRank>) ranksField.get(stale)).remove(playerUuid);
-                Object playerTeam = mgr.getPlayerTeamForPlayerID(playerUuid).orElse(null);
-                if (playerTeam != null) {
-                    ((Map<UUID, TeamRank>) ranksField.get(playerTeam)).put(playerUuid, TeamRank.OWNER);
-                }
-                FTBQuestsSync.LOGGER.info("Detached player={} from stale party={} before DB team={}",
-                        playerUuid, stale.getId(), dbTeamId);
-            }
-
-            if (!setEffectiveTeam(mgr, playerUuid, dbTeam)) return false;
-
-            Team after = mgr.getTeamForPlayerID(playerUuid).orElse(null);
-            boolean converged = after != null && after.getId().equals(dbTeamId);
-            if (!converged) {
-                FTBQuestsSync.LOGGER.warn("Convergence check failed player={} expected={} actual={}",
-                        playerUuid, dbTeamId, after == null ? null : after.getId());
-            }
-            return converged;
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("forcePlayerToDbTeam failed player={} team={}", playerUuid, dbTeamId, e);
-            return false;
-        }
-    }
-
-    public static void markTeamDirtyAndSync(TeamManager mgr, Team team) {
-        try {
-            Class<?> baseCls = Class.forName("dev.ftb.mods.ftbteams.data.AbstractTeamBase");
-            Method markDirty = baseCls.getDeclaredMethod("markDirty");
-            markDirty.setAccessible(true);
-            markDirty.invoke(team);
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.warn("markDirty on team={} failed", team.getId(), e);
-        }
-        try {
-            Class<?> mgrImplCls = Class.forName("dev.ftb.mods.ftbteams.data.TeamManagerImpl");
-            Method syncToAll = mgrImplCls.getMethod("syncToAll", Team[].class);
-            syncToAll.invoke(mgr, (Object) new Team[]{team});
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.warn("syncToAll on team={} failed", team.getId(), e);
-        }
-    }
-
-    public static boolean removePlayerFromTeamReflective(Object team, UUID playerUuid) {
-        try {
-            Class<?> baseCls = Class.forName("dev.ftb.mods.ftbteams.data.AbstractTeamBase");
-            Field ranksField = baseCls.getDeclaredField("ranks");
-            ranksField.setAccessible(true);
-            Object ranksObj = ranksField.get(team);
-            if (ranksObj instanceof Map<?, ?> ranks) {
-                ranks.remove(playerUuid);
-                return true;
-            }
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("removePlayerFromTeam reflection failed player={}", playerUuid, e);
-        }
-        return false;
-    }
-
-    public static boolean transferPartyOwnership(Team team, CommandSourceStack source, GameProfile newOwner) {
-        try {
-            if (team instanceof PartyTeam partyTeam) {
-                partyTeam.transferOwnership(source, newOwner);
-                return true;
-            }
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.warn("Native owner transfer failed team={} owner={}, trying reflection",
-                    team.getId(), newOwner.getId(), e);
-        }
-        return setPartyOwnerReflective(team, newOwner.getId());
-    }
-
-    private static boolean setPartyOwnerReflective(Team team, UUID owner) {
-        try {
-            Class<?> partyTeamCls = Class.forName("dev.ftb.mods.ftbteams.data.PartyTeam");
-            Field ownerField = partyTeamCls.getDeclaredField("owner");
-            ownerField.setAccessible(true);
-            ownerField.set(team, owner);
-            return true;
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("Owner reflection failed team={} owner={}", team.getId(), owner, e);
-            return false;
         }
     }
 

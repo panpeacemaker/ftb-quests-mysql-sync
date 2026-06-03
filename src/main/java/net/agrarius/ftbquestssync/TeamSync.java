@@ -1,6 +1,5 @@
 package net.agrarius.ftbquestssync;
 
-import com.mojang.authlib.GameProfile;
 import dev.ftb.mods.ftbteams.api.FTBTeamsAPI;
 import dev.ftb.mods.ftbteams.api.Team;
 import dev.ftb.mods.ftbteams.api.TeamManager;
@@ -19,10 +18,7 @@ import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPubSub;
 
-import java.util.List;
-import java.util.Objects;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -54,7 +50,6 @@ public final class TeamSync {
     private static final String CHANNEL = "ftbquests:team:membership";
 
     private final ConcurrentHashMap<String, Long> recentEmits = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<UUID, String[]> lastSyncedProps = new ConcurrentHashMap<>();
 
     private JedisPool pool;
     private ExecutorService subscriberExec;
@@ -85,7 +80,6 @@ public final class TeamSync {
         TeamEvent.PLAYER_CHANGED.register(this::onPlayerChanged);
         TeamEvent.OWNERSHIP_TRANSFERRED.register(this::onOwnershipTransferred);
         TeamEvent.PLAYER_LOGGED_IN.register(this::onPlayerLoggedIn);
-        TeamEvent.PROPERTIES_CHANGED.register(this::onPropertiesChanged);
         FTBQuestsSync.LOGGER.info("TeamSync event listeners registered");
     }
 
@@ -130,7 +124,6 @@ public final class TeamSync {
     private void onCreated(TeamCreatedEvent ev) {
         if (!Config.syncTeams) return;
         Team team = ev.getTeam();
-        if (TeamMutationGuard.isTeamSuppressed(team.getId())) return;
         persistTeam(team);
         publish("created", team.getId());
     }
@@ -138,200 +131,78 @@ public final class TeamSync {
     private void onDeleted(TeamEvent ev) {
         if (!Config.syncTeams) return;
         Team team = ev.getTeam();
-        UUID teamId = team.getId();
-        if (TeamMutationGuard.isTeamSuppressed(teamId)) return;
-        List<UUID> memberUuids = MySQLBackend.getInstance().selectTeamMembers(teamId).stream()
-                .map(MySQLBackend.TeamMemberRow::playerUuid)
-                .toList();
-        MySQLBackend.getInstance().migratePartyToSoloMembers(teamId, memberUuids);
-        MySQLBackend.getInstance().markTeamDeletedAsync(teamId);
-        publish("deleted", teamId);
+        MySQLBackend.getInstance().markTeamDeletedAsync(team.getId());
+        publish("deleted", team.getId());
     }
 
     private void onJoinedParty(PlayerJoinedPartyTeamEvent ev) {
         if (!Config.syncTeams) return;
         Team team = ev.getTeam();
         UUID playerId = ev.getPlayer().getUUID();
-        if (TeamMutationGuard.isTeamSuppressed(team.getId())) return;
         persistTeam(team);
-        MySQLBackend.getInstance().upsertMembershipFuture(playerId, team.getId(), rankName(team, playerId))
-                .whenComplete((v, e) -> {
-                    if (e != null) {
-                        FTBQuestsSync.LOGGER.error("member add persist failed player={} team={}", playerId, team.getId(), e);
-                        return;
-                    }
-                    publish("member_add", team.getId(), playerId);
-                });
+        persistMembership(playerId, team);
+        publish("joined", team.getId(), playerId);
     }
 
     private void onLeftParty(PlayerLeftPartyTeamEvent ev) {
         if (!Config.syncTeams) return;
         Team partyTeam = ev.getTeam();
-        UUID partyTeamId = partyTeam.getId();
         UUID playerId = ev.getPlayer().getUUID();
-        if (TeamMutationGuard.isTeamSuppressed(partyTeamId)) return;
         TeamManager mgr = FTBTeamsAPI.api().getManager();
-        Team playerTeam = mgr.getPlayerTeamForPlayerID(playerId).orElse(null);
-        UUID targetTeamId = playerTeam == null ? playerId : playerTeam.getId();
-        String rank = playerTeam == null ? "OWNER" : rankName(playerTeam, playerId);
-        MySQLBackend.getInstance().upsertMembershipFuture(playerId, targetTeamId, rank)
-                .whenComplete((v, e) -> {
-                    if (e != null) {
-                        FTBQuestsSync.LOGGER.error("kick solo-persist failed player={}", playerId, e);
-                        return;
-                    }
-                    migrateMemberQuestStateToSolo(partyTeamId, playerId);
-                    publish("member_kick", partyTeamId, playerId);
-                });
+        mgr.getPlayerTeamForPlayerID(playerId).ifPresent(playerTeam ->
+                persistMembership(playerId, playerTeam));
+        publish("left", partyTeam.getId(), playerId);
     }
 
     private void onPlayerChanged(PlayerChangedTeamEvent ev) {
         if (!Config.syncTeams) return;
         Team team = ev.getTeam();
         UUID playerId = ev.getPlayerId();
-        if (TeamMutationGuard.isTeamSuppressed(team.getId())) return;
-        if (TeamMutationGuard.isPlayerSuppressed(playerId)) return;
         persistTeam(team);
-        // A change INTO the player's own solo team is non-authoritative: it fires
-        // during FTB Teams' login auto-creation, BEFORE the async login materialize
-        // can read the DB. An unconditional upsert here would clobber a cross-server
-        // party membership (player_uuid PK) before convergence runs, stranding the
-        // invitee solo. Use the guarded upsert that only writes when no row exists
-        // or it already points at this same solo team. A real party exit has a
-        // previous party team, so persist that solo membership authoritatively.
-        boolean ownSolo = team.isPlayerTeam() && team.getId().equals(playerId);
-        boolean realPartyExit = ownSolo && ev.getPreviousTeam().isPresent() && ev.getPreviousTeam().get().isPartyTeam();
-        if (realPartyExit) {
-            UUID previousPartyId = ev.getPreviousTeam().get().getId();
-            MySQLBackend.getInstance().upsertMembershipFuture(playerId, team.getId(), rankName(team, playerId))
-                    .whenComplete((v, e) -> {
-                        if (e != null) {
-                            FTBQuestsSync.LOGGER.error("kick solo-persist failed player={}", playerId, e);
-                            return;
-                        }
-                        migrateMemberQuestStateToSolo(previousPartyId, playerId);
-                        TeamSync.getInstance().publishMemberKick(previousPartyId, playerId);
-                    });
-            return;
-        }
-        if (ownSolo) {
-            MySQLBackend.getInstance().upsertOwnPlayerMembershipIfAbsentOrSelfAsync(
-                    playerId, rankName(team, playerId));
-        } else {
-            persistMembership(playerId, team);
-        }
+        persistMembership(playerId, team);
         publish("changed", team.getId(), playerId);
     }
 
     private void onOwnershipTransferred(PlayerTransferredTeamOwnershipEvent ev) {
         if (!Config.syncTeams) return;
         Team team = ev.getTeam();
-        if (TeamMutationGuard.isTeamSuppressed(team.getId())) return;
-        UUID newOwner = ev.getToProfile() == null ? null : ev.getToProfile().getId();
-        if (newOwner == null) newOwner = team.getOwner();
-        if (newOwner == null) {
-            FTBQuestsSync.LOGGER.warn("owner_transfer skipped: team={} has no new owner", team.getId());
-            return;
-        }
-        UUID owner = newOwner;
-        persistTeamFuture(team).thenApply(ignored -> MySQLBackend.getInstance().updateTeamOwner(team.getId(), owner))
-                .whenComplete((updated, e) -> {
-                    if (e != null) {
-                        FTBQuestsSync.LOGGER.error("owner_transfer persist failed team={} owner={}", team.getId(), owner, e);
-                        return;
-                    }
-                    if (!Boolean.TRUE.equals(updated)) {
-                        FTBQuestsSync.LOGGER.warn("owner_transfer not published: DB owner update failed team={} owner={}",
-                                team.getId(), owner);
-                        return;
-                    }
-                    publish("owner_transfer", team.getId());
-                });
+        persistTeam(team);
+        publish("ownership", team.getId());
     }
 
     private void onPlayerLoggedIn(PlayerLoggedInAfterTeamEvent ev) {
         reconcileOnLogin(ev.getPlayer());
     }
 
-    private void onPropertiesChanged(dev.ftb.mods.ftbteams.api.event.TeamPropertiesChangedEvent ev) {
-        Team team = ev.getTeam();
-        if (TeamMutationGuard.isTeamSuppressed(team.getId())) return;
-        if (!Config.syncTeams) return;
-        String name = readName(team);
-        String color = readColor(team);
-        String oldColor = cachedColor(team.getId());
-        persistTeamFuture(team).whenComplete((ignored, e) -> {
-            if (e != null) {
-                FTBQuestsSync.LOGGER.error("props persist failed team={}", team.getId(), e);
-                return;
-            }
-            if (updatePropsCache(team.getId(), name, color)) {
-                publish("props", team.getId());
-            }
-            if (!Objects.equals(oldColor, color)) {
-                ChunkMaterializer.refreshTeamClaims(team.getId());
-            }
-        });
-    }
-
     public void reconcileOnLogin(net.minecraft.server.level.ServerPlayer player) {
         if (!Config.syncTeams) return;
         UUID playerId = player.getUUID();
 
-        // The DB (via the materializer) is the sole authority on login. The old
-        // code also force-reloaded mgr.getTeamForPlayer(player) here, but on a
-        // stale login that resolves to the player's pre-login (possibly deleted)
-        // team and pushed it alongside the correct one, leaving the client on the
-        // wrong team. Only the materializer resolves + pushes the DB team now.
         TeamMaterializer.materializeOnLogin(player);
 
-        // Fallback only: when the player has NO DB membership row, persist their
-        // current local team so a peer can materialize it. Resolve current INSIDE
-        // this callback (after the DB confirmed no row) so we never act on a stale
-        // pre-materialize team.
-        MySQLBackend.getInstance().loadTeamMaterializationAsync(playerId).whenComplete((row, err) -> {
-            if (err != null || row != null) return;
-            player.getServer().execute(() -> {
-                try {
-                    TeamManager mgr = FTBTeamsAPI.api().getManager();
-                    Team current = mgr.getTeamForPlayer(player)
-                            .or(() -> mgr.getPlayerTeamForPlayerID(playerId))
-                            .orElse(null);
-                    if (current == null) return;
-                    persistTeam(current);
-                    // A player's auto-created solo team must never clobber a party
-                    // membership another server may have written (membership PK is
-                    // player_uuid). Use the guarded upsert that only touches the row
-                    // when it is absent or already points to this same solo team.
-                    if (current.isPlayerTeam() && current.getId().equals(playerId)) {
-                        MySQLBackend.getInstance().upsertOwnPlayerMembershipIfAbsentOrSelfAsync(
-                                playerId, rankName(current, playerId));
-                    } else {
-                        persistMembership(playerId, current);
-                    }
-                    FTBQuestsSync.LOGGER.info("Persisted missing team membership on login: player={} team={}",
-                            playerId, current.getId());
-                } catch (Exception e) {
-                    FTBQuestsSync.LOGGER.debug("Could not persist team membership on login for player={}", playerId, e);
-                }
-            });
-        });
+        TeamManager mgr = FTBTeamsAPI.api().getManager();
+        Team current = mgr.getTeamForPlayer(player).orElse(null);
+        if (current != null) {
+            RedisSync.getInstance().forceReloadAndPushTo(current.getId(), player);
+            try {
+                dev.ftb.mods.ftbquests.quest.TeamData data = dev.ftb.mods.ftbquests.quest.TeamData.get(player);
+                RankSoloProgress.pushToPlayerAsync(data, player);
+            } catch (Exception e) {
+                FTBQuestsSync.LOGGER.warn("Rank solo push on login failed for {}", player.getUUID(), e);
+            }
+        }
     }
 
-    public void forceFullSyncToPlayer(ServerPlayer player, UUID teamId) {
-        if (!Config.syncTeams || player == null || teamId == null) return;
+    public void forceFullSyncToPlayer(ServerPlayer player) {
+        if (!Config.syncTeams || player == null) return;
         player.getServer().execute(() -> {
             try {
                 TeamManager mgr = FTBTeamsAPI.api().getManager();
-                // syncAllToPlayer's selfTeam argument is what becomes the client's
-                // self-team. Resolve the EXPLICIT teamId (the DB-authoritative team),
-                // never mgr.getTeamForPlayer(player): on a stale login that still
-                // returns the old/deleted team and would push it to the client,
-                // overwriting the correct party (the divergence bug).
-                Team team = mgr.getTeamByID(teamId).orElse(null);
+                Team team = mgr.getTeamForPlayer(player)
+                        .or(() -> mgr.getPlayerTeamForPlayerID(player.getUUID()))
+                        .orElse(null);
                 if (team == null) {
-                    FTBQuestsSync.LOGGER.warn("FTB Teams full sync skipped: team {} not present for player={}",
-                            teamId, player.getUUID());
+                    FTBQuestsSync.LOGGER.warn("FTB Teams full sync skipped: no team for player={}", player.getUUID());
                     return;
                 }
 
@@ -341,103 +212,38 @@ public final class TeamSync {
                 syncAllToPlayer.invoke(mgr, player, team);
                 FTBQuestsSync.LOGGER.info("Forced FTB Teams full sync to player={} team={}", player.getUUID(), team.getId());
             } catch (Exception e) {
-                FTBQuestsSync.LOGGER.warn("Forced FTB Teams full sync failed for player={} team={}",
-                        player.getUUID(), teamId, e);
+                FTBQuestsSync.LOGGER.warn("Forced FTB Teams full sync failed for player={}", player.getUUID(), e);
             }
         });
     }
 
-    public void persistTeamNow(Team team) {
-        persistTeam(team, false);
-    }
-
     private void persistTeam(Team team) {
-        persistTeam(team, true);
-    }
-
-    private CompletableFuture<Void> persistTeamFuture(Team team) {
-        if (team == null) return CompletableFuture.completedFuture(null);
-        String type = teamType(team);
-        String name = readName(team);
-        String color = readColor(team);
-        UUID owner = team.getOwner();
-        return MySQLBackend.getInstance().upsertTeamInfoFuture(team.getId(), type, name, owner, color);
-    }
-
-    private void persistTeam(Team team, boolean async) {
         if (team == null) return;
-        String type = teamType(team);
-        String name = readName(team);
-        String color = readColor(team);
+        String type;
+        if (team.isPartyTeam()) type = "PARTY";
+        else if (team.isServerTeam()) type = "SERVER";
+        else if (team.isPlayerTeam()) type = "PLAYER";
+        else type = "UNKNOWN";
+
+        String name;
+        try {
+            name = team.getProperty(TeamProperties.DISPLAY_NAME);
+        } catch (Exception e) {
+            name = team.getShortName();
+        }
         UUID owner = team.getOwner();
-        if (async) MySQLBackend.getInstance().upsertTeamInfoAsync(team.getId(), type, name, owner, color);
-        else MySQLBackend.getInstance().upsertTeamInfo(team.getId(), type, name, owner, color);
-    }
-
-    private static String teamType(Team team) {
-        if (team.isPartyTeam()) return "PARTY";
-        if (team.isServerTeam()) return "SERVER";
-        if (team.isPlayerTeam()) return "PLAYER";
-        return "UNKNOWN";
-    }
-
-    private static String readName(Team team) {
-        try {
-            return team.getProperty(TeamProperties.DISPLAY_NAME);
-        } catch (Exception e) {
-            return team.getShortName();
-        }
-    }
-
-    private static String readColor(Team team) {
-        try {
-            dev.ftb.mods.ftblibrary.icon.Color4I color = team.getProperty(TeamProperties.COLOR);
-            return color == null ? null : TeamProperties.COLOR.toString(color);
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.debug("Could not read team color for {}", team.getId(), e);
-            return null;
-        }
+        MySQLBackend.getInstance().upsertTeamInfoAsync(team.getId(), type, name, owner);
     }
 
     private void persistMembership(UUID playerId, Team team) {
         if (team == null) return;
-        MySQLBackend.getInstance().upsertMembershipAsync(playerId, team.getId(), rankName(team, playerId));
-    }
-
-    private void migrateMemberQuestStateToSolo(UUID partyTeamId, UUID playerId) {
-        MySQLBackend.getInstance().migratePartyMemberToSoloAsync(partyTeamId, playerId)
-                .whenComplete((result, error) -> {
-                    if (error != null) {
-                        FTBQuestsSync.LOGGER.error(
-                                "Party-to-solo quest migration failed party={} player={}",
-                                partyTeamId, playerId, error);
-                        return;
-                    }
-                    if (result != null) {
-                        RedisSync.getInstance().publishTeamUpdate(playerId, result.revision, result.hashHex);
-                    }
-                });
-    }
-
-    private static String rankName(Team team, UUID playerId) {
         TeamRank rank = team.getRankForPlayer(playerId);
-        return rank == null ? "MEMBER" : rank.name();
+        String rankName = rank == null ? "MEMBER" : rank.name();
+        MySQLBackend.getInstance().upsertMembershipAsync(playerId, team.getId(), rankName);
     }
 
     private void publish(String reason, UUID teamId) {
         publish(reason, teamId, null);
-    }
-
-    public void publishMemberAdd(UUID teamId, UUID playerId) {
-        publish("member_add", teamId, playerId);
-    }
-
-    public void publishMemberKick(UUID teamId, UUID playerId) {
-        publish("member_kick", teamId, playerId);
-    }
-
-    public void publishOwnerTransfer(UUID teamId, UUID playerId) {
-        publish("owner_transfer", teamId, playerId);
     }
 
     private void publish(String reason, UUID teamId, UUID playerId) {
@@ -502,23 +308,6 @@ public final class TeamSync {
             FTBQuestsSync.LOGGER.info("Received remote team event: source={} reason={} team={} player={}",
                     sourceServer, reason, teamId, playerIdStr);
 
-            if ("props".equals(reason)) {
-                handleRemoteProps(teamId);
-                return;
-            }
-            if ("member_add".equals(reason)) {
-                handleRemoteMemberAdd(teamId, UUID.fromString(playerIdStr));
-                return;
-            }
-            if ("member_kick".equals(reason)) {
-                handleRemoteMemberKick(teamId, UUID.fromString(playerIdStr));
-                return;
-            }
-            if ("owner_transfer".equals(reason)) {
-                handleRemoteOwnerTransfer(teamId);
-                return;
-            }
-
             // If a specific player is mentioned and they are online on this
             // server, reconcile their team membership + quest data immediately.
             // This handles e.g. one player adding another to the party while
@@ -550,96 +339,6 @@ public final class TeamSync {
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("Bad team Redis message: {}", message, e);
         }
-    }
-
-    private void handleRemoteProps(UUID teamId) {
-        MySQLBackend.getInstance().selectTeamInfoAsync(teamId).whenComplete((row, err) -> {
-            if (err != null) {
-                FTBQuestsSync.LOGGER.warn("Remote props DB load failed team={}", teamId, err);
-                return;
-            }
-            MySQLBackend.TeamInfoRow info = row.orElse(null);
-            if (info == null || info.deleted()) return;
-            server.execute(() -> applyRemoteProps(teamId, info));
-        });
-    }
-
-    private void applyRemoteProps(UUID teamId, MySQLBackend.TeamInfoRow info) {
-        if (!TeamMaterializer.ensureTeamMaterialized(teamId)) return;
-        TeamManager mgr = FTBTeamsAPI.api().getManager();
-        Team team = mgr.getTeamByID(teamId).orElse(null);
-        if (team == null) return;
-
-        boolean changed = false;
-        boolean colorChanged = false;
-        try (TeamMutationGuard.Scope ignored = TeamMutationGuard.suppressTeam(teamId)) {
-            if (info.name() != null && !Objects.equals(readName(team), info.name())) {
-                team.setProperty(TeamProperties.DISPLAY_NAME, info.name());
-                changed = true;
-            }
-            String color = info.color();
-            if (color != null && !color.isBlank() && !Objects.equals(readColor(team), color)) {
-                var parsedColor = TeamProperties.COLOR.fromString(color);
-                if (parsedColor.isPresent()) {
-                    team.setProperty(TeamProperties.COLOR, parsedColor.get());
-                    changed = true;
-                    colorChanged = true;
-                }
-            }
-        }
-        if (changed) TeamMaterializer.markTeamDirtyAndSync(mgr, team);
-        if (colorChanged) ChunkMaterializer.refreshTeamClaims(teamId);
-        updatePropsCache(teamId, info.name(), info.color());
-    }
-
-    private void handleRemoteMemberAdd(UUID teamId, UUID playerId) {
-        MySQLBackend.getInstance().loadTeamMaterializationAsync(playerId).whenComplete((row, err) -> {
-            if (err != null) {
-                FTBQuestsSync.LOGGER.warn("Remote member_add DB load failed team={} player={}", teamId, playerId, err);
-                return;
-            }
-            if (row == null || row.info() == null || row.info().deleted()) return;
-            if (!teamId.equals(row.membership().teamId())) return;
-            server.execute(() -> FtbSyncTeamCommand.applyMemberAddLocal(server, teamId, playerId, row.membership().rank()));
-        });
-    }
-
-    private void handleRemoteMemberKick(UUID teamId, UUID playerId) {
-        MySQLBackend.getInstance().loadTeamMaterializationAsync(playerId).whenComplete((row, err) -> {
-            if (err != null) {
-                FTBQuestsSync.LOGGER.warn("Remote member_kick DB load failed team={} player={}", teamId, playerId, err);
-                return;
-            }
-            server.execute(() -> FtbSyncTeamCommand.applyMemberKickLocal(server, teamId, playerId, row));
-        });
-    }
-
-    private void handleRemoteOwnerTransfer(UUID teamId) {
-        MySQLBackend.getInstance().loadTeamStateAsync(teamId).whenComplete((state, err) -> {
-            if (err != null) {
-                FTBQuestsSync.LOGGER.warn("Remote owner_transfer DB load failed team={}", teamId, err);
-                return;
-            }
-            if (state == null || state.info() == null || state.info().deleted() || state.info().owner() == null) return;
-            server.execute(() -> FtbSyncTeamCommand.applyOwnerTransferLocal(server, server.createCommandSourceStack(),
-                    teamId, profileFor(server, state.info().owner()), state.members()));
-        });
-    }
-
-    private boolean updatePropsCache(UUID teamId, String name, String color) {
-        String[] previous = lastSyncedProps.put(teamId, new String[]{name, color});
-        return previous == null || !Objects.equals(previous[0], name) || !Objects.equals(previous[1], color);
-    }
-
-    private String cachedColor(UUID teamId) {
-        String[] cached = lastSyncedProps.get(teamId);
-        return cached != null ? cached[1] : null;
-    }
-
-    private static GameProfile profileFor(MinecraftServer server, UUID playerId) {
-        ServerPlayer player = server.getPlayerList().getPlayer(playerId);
-        if (player != null) return player.getGameProfile();
-        return new GameProfile(playerId, playerId.toString());
     }
 
     private static void auth(Jedis jedis) {

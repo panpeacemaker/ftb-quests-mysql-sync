@@ -1,9 +1,7 @@
 package net.agrarius.ftbquestssync;
 
-import dev.architectury.event.events.common.LifecycleEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.entity.player.PlayerEvent;
-import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.server.ServerStartedEvent;
 import net.minecraftforge.event.server.ServerStoppingEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
@@ -12,17 +10,16 @@ import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 
 import dev.ftb.mods.ftbquests.quest.TeamData;
-import net.agrarius.ftbquestssync.access.TeamDataAccess;
 
 @Mod(FTBQuestsSync.MOD_ID)
 public class FTBQuestsSync {
 
     public static final String MOD_ID = "ftbquestssync";
     public static final Logger LOGGER = LoggerFactory.getLogger("FTBQuestsSync");
-    public static volatile boolean serverStarted = false;
 
     public FTBQuestsSync() {
         FMLJavaModLoadingContext.get().getModEventBus().addListener(this::commonSetup);
@@ -30,7 +27,7 @@ public class FTBQuestsSync {
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {
-        LOGGER.info("FTB Quests Sync 1.1.2 booting");
+        LOGGER.info("FTB Quests Sync 1.0.3 booting");
         Config.reload();
         MySQLBackend.getInstance().initialize();
         if (Config.syncTeams) {
@@ -38,80 +35,61 @@ public class FTBQuestsSync {
         } else {
             LOGGER.info("TeamSync disabled by config: no FTB Teams listeners will be registered");
         }
-        ChunkSync.getInstance().registerEventListeners();
-        LifecycleEvent.SERVER_LEVEL_LOAD.register(level -> {
-            ChunkMaterializer.onLevelLoad(level);
-            ChunkSeeder.runIfConfigured(level.getServer());
-        });
     }
 
     @SubscribeEvent
     public void onServerStarted(ServerStartedEvent event) {
-        ChunkMaterializer.initialize(event.getServer());
         RedisSync.getInstance().initialize(event.getServer());
         if (Config.syncTeams) {
             TeamSync.getInstance().initializeRedis(event.getServer());
         }
         RankSoloProgress.init();
-        ChunkSeeder.runIfConfigured(event.getServer());
-        ChunkMaterializer.materializeAllLoaded(event.getServer());
-        LOGGER.info("FTB Quests Sync 1.1.2 ready (mysqlAvailable={}, redisEnabled={}, teamsRedisEnabled={}, serverId={})",
+        LOGGER.info("FTB Quests Sync ready (mysqlAvailable={}, redisEnabled={}, teamsRedisEnabled={}, serverId={})",
                 MySQLBackend.getInstance().isAvailable(),
                 RedisSync.getInstance().isEnabled(),
                 TeamSync.getInstance().isEnabled(),
                 RedisSync.getInstance().getServerId());
-        serverStarted = true;
     }
 
-    @SubscribeEvent
-    public void onRegisterCommands(RegisterCommandsEvent event) {
-        FtbSyncTeamCommand.register(event.getDispatcher());
-    }
+    private static final java.util.concurrent.ScheduledExecutorService LOGIN_SCHEDULER =
+            java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "FTBQuestsSync-Login-Delay");
+                t.setDaemon(true);
+                return t;
+            });
 
     @SubscribeEvent
     public void onPlayerLogin(PlayerEvent.PlayerLoggedInEvent event) {
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
-        MySQLBackend.getInstance().upsertPlayerNameAsync(player.getUUID(), player.getGameProfile().getName());
-        // When syncTeams=true, TeamSync.reconcileOnLogin fires via PlayerLoggedInAfterTeamEvent
-        // AFTER FTB Teams has materialized the correct effective team. Running both produces a
-        // double async reload race: two DB loads race to win; loser's SyncTeamDataMessage
-        // overwrites the winner's fresher state. Confirmed in logs (5-second gap).
-        // When syncTeams=false there is no Teams event, so we handle it here directly.
-        if (Config.syncTeams) return;
-        try {
-            dev.ftb.mods.ftbquests.quest.TeamData data = dev.ftb.mods.ftbquests.quest.TeamData.get(player);
-            RedisSync.getInstance().forceReloadAndPushTo(data.getTeamId(), player);
-            RankSoloProgress.pushToPlayerAsync(data, player);
-            ChunkMaterializer.materializeOnLogin(player);
-        } catch (Exception e) {
-            LOGGER.warn("Login handler failed for {}", player.getUUID(), e);
-        }
-    }
-
-    @SubscribeEvent
-    public void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) {
-        if (!(event.getEntity() instanceof ServerPlayer player)) return;
         if (player.isRemoved()) return;
-        if (!Config.syncQuests) return;
-        try {
-            TeamData data = TeamData.get(player);
-            if (data == null) return;
-            if (!(data instanceof TeamDataAccess access)) {
-                LOGGER.warn("Logout force-save skipped: TeamDataAccess mixin bridge is unavailable for player={}", player.getUUID());
-                return;
-            }
-
-            LOGGER.info("Player logout: player={} team={} — force-saving team data", player.getUUID(), data.getTeamId());
-            access.ftbQuestsSync$requestForceSave();
-            data.markDirty();
-        } catch (Exception e) {
-            LOGGER.warn("Player logout force-save failed for player={}", player.getUUID(), e);
-        }
+        MinecraftServer server = player.getServer();
+        if (server == null) return;
+        LOGIN_SCHEDULER.schedule(() -> {
+            if (player.isRemoved()) return;
+            server.execute(() -> {
+                try {
+                    TeamData data = TeamData.get(player);
+                    RedisSync.getInstance().forceReloadAndPushTo(data.getTeamId(), player);
+                    RankSoloProgress.pushToPlayerAsync(data, player);
+                    TeamSync.getInstance().forceFullSyncToPlayer(player);
+                } catch (Exception e) {
+                    FTBQuestsSync.LOGGER.warn("Solo progress preload on login failed for {}", player.getUUID(), e);
+                }
+            });
+        }, 5, java.util.concurrent.TimeUnit.SECONDS);
     }
 
     @SubscribeEvent
     public void onServerStopping(ServerStoppingEvent event) {
-        ChunkSync.getInstance().shutdown();
+        LOGIN_SCHEDULER.shutdown();
+        try {
+            if (!LOGIN_SCHEDULER.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                LOGIN_SCHEDULER.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            LOGIN_SCHEDULER.shutdownNow();
+        }
         TeamSync.getInstance().shutdown();
         RedisSync.getInstance().shutdown();
         MySQLBackend.getInstance().shutdown();

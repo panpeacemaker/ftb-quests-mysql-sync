@@ -5,15 +5,13 @@
   "compatibilityLevel": "JAVA_17",
   "refmap": "ftbquestssync.refmap.json",
   "mixins": [
+    "TeamDataMixin",
     "BaseQuestFileMixin",
-    "RequestTeamDataMessageMixin",
-    "QuestMixin",
+    "ClaimRewardMessageMixin",
     "RewardClaimMixin",
-    "RewardMixin",
-    "RankSoloTeamDataMixin",
-    "TeamDataMixin"
+    "RankSoloTeamDataMixin"
   ],
   "injectors": {
-    "defaultRequire": 0
+    "defaultRequire": 1
   }
 }

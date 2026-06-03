@@ -2,22 +2,12 @@ package net.agrarius.ftbquestssync;
 
 import dev.ftb.mods.ftblibrary.snbt.SNBTCompoundTag;
 import dev.ftb.mods.ftbquests.api.FTBQuestsAPI;
-import dev.ftb.mods.ftbquests.net.DisplayCompletionToastMessage;
 import dev.ftb.mods.ftbquests.net.ObjectCompletedMessage;
-import dev.ftb.mods.ftbquests.net.ObjectCompletedResetMessage;
-import dev.ftb.mods.ftbquests.net.ResetRewardMessage;
 import dev.ftb.mods.ftbquests.net.SyncTeamDataMessage;
 import dev.ftb.mods.ftbquests.net.UpdateTaskProgressMessage;
 import dev.ftb.mods.ftbquests.quest.BaseQuestFile;
-import dev.ftb.mods.ftbquests.quest.Chapter;
-import dev.ftb.mods.ftbquests.quest.Quest;
-import dev.ftb.mods.ftbquests.quest.QuestObjectBase;
 import dev.ftb.mods.ftbquests.quest.TeamData;
-import dev.ftb.mods.ftbquests.quest.reward.Reward;
-import dev.ftb.mods.ftbquests.quest.task.Task;
-import dev.ftb.mods.ftbquests.util.QuestKey;
 import dev.ftb.mods.ftbteams.api.FTBTeamsAPI;
-import net.minecraft.Util;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
@@ -26,13 +16,10 @@ import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPubSub;
 
 import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -157,24 +144,8 @@ public class RedisSync {
         }
     }
 
-    public void publishChunkUpdate(String reason, UUID teamId) {
-        if (!enabled || !Config.syncChunks) return;
-
-        String payload = getServerId() + "|" + reason + "|" + teamId + "|-";
-        try (Jedis jedis = pool.getResource()) {
-            if (!Config.redisPassword.isBlank()) {
-                jedis.auth(Config.redisPassword);
-            }
-            jedis.publish(CHANNEL, payload);
-            FTBQuestsSync.LOGGER.info("Published Redis chunk invalidation: {}", payload);
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.warn("Redis chunk publish failed: {}", payload, e);
-        }
-    }
-
     private void handleRemoteUpdate(String message) {
         try {
-            if (handleChunkMessage(message)) return;
             if (!Config.syncQuests) return;
             pruneSeenEvents();
             RemoteEvent event = parseEvent(message);
@@ -184,32 +155,19 @@ public class RedisSync {
             if (seenEvents.putIfAbsent(event.eventId, System.currentTimeMillis()) != null) return;
             if (server == null) return;
 
-            FTBQuestsSync.LOGGER.info("Received remote Redis team update: source={} team={} revision={} hash={} forceReplace={}",
-                    event.sourceServer, event.teamId, event.revision, event.hashHex, event.forceReplace);
+            FTBQuestsSync.LOGGER.info("Received remote Redis team update: source={} team={} revision={} hash={}",
+                    event.sourceServer, event.teamId, event.revision, event.hashHex);
             MySQLBackend.getInstance().loadTeamDataAsync(event.teamId).whenComplete((fresh, error) -> {
                 if (error != null) {
                     FTBQuestsSync.LOGGER.error("Async MySQL load failed for remote team {}", event.teamId, error);
                     return;
                 }
                 if (fresh == null) return;
-                server.execute(() -> applyRemoteUpdate(event.teamId, fresh, event.forceReplace));
+                server.execute(() -> applyRemoteUpdate(event.teamId, fresh));
             });
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("Bad Redis message: {}", message, e);
         }
-    }
-
-    private boolean handleChunkMessage(String message) {
-        String[] parts = message.split("\\|", 4);
-        if (parts.length < 4 || !parts[1].startsWith("chunks_")) return false;
-        if (!Config.syncChunks) return true;
-        String sourceServer = parts[0];
-        if (getServerId().equals(sourceServer)) return true;
-        UUID teamId = UUID.fromString(parts[2]);
-        FTBQuestsSync.LOGGER.info("Received remote chunk invalidation: source={} reason={} team={}",
-                sourceServer, parts[1], teamId);
-        ChunkMaterializer.materializeTeam(teamId);
-        return true;
     }
 
     private RemoteEvent parseEvent(String message) {
@@ -218,15 +176,14 @@ public class RedisSync {
             int colon = message.indexOf(':');
             if (colon <= 0) return null;
             return new RemoteEvent(UUID.randomUUID(), message.substring(0, colon),
-                    UUID.fromString(message.substring(colon + 1)), -1L, "", false);
+                    UUID.fromString(message.substring(colon + 1)), -1L, "");
         }
         UUID eventId = UUID.fromString(jsonValue(trimmed, "eventId"));
         String sourceServer = jsonValue(trimmed, "sourceServer");
         UUID teamId = UUID.fromString(jsonValue(trimmed, "entityId"));
         long revision = Long.parseLong(jsonNumber(trimmed, "revision", "-1"));
         String hash = jsonValue(trimmed, "hash");
-        boolean forceReplace = jsonBool(trimmed, "forceReplace");
-        return new RemoteEvent(eventId, sourceServer, teamId, revision, hash, forceReplace);
+        return new RemoteEvent(eventId, sourceServer, teamId, revision, hash);
     }
 
     private static String jsonValue(String json, String key) {
@@ -248,16 +205,6 @@ public class RedisSync {
         return end == start ? fallback : json.substring(start, end);
     }
 
-    private static boolean jsonBool(String json, String key) {
-        int k = json.indexOf("\"" + key + "\"");
-        if (k < 0) return false;
-        int colon = json.indexOf(':', k);
-        if (colon < 0) return false;
-        int i = colon + 1;
-        while (i < json.length() && Character.isWhitespace(json.charAt(i))) i++;
-        return json.startsWith("true", i) || json.startsWith("\"true\"", i);
-    }
-
     private static String escapeJson(String value) {
         return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
@@ -268,15 +215,13 @@ public class RedisSync {
         private final UUID teamId;
         private final long revision;
         private final String hashHex;
-        private final boolean forceReplace;
 
-        private RemoteEvent(UUID eventId, String sourceServer, UUID teamId, long revision, String hashHex, boolean forceReplace) {
+        private RemoteEvent(UUID eventId, String sourceServer, UUID teamId, long revision, String hashHex) {
             this.eventId = eventId;
             this.sourceServer = sourceServer;
             this.teamId = teamId;
             this.revision = revision;
             this.hashHex = hashHex;
-            this.forceReplace = forceReplace;
         }
     }
 
@@ -293,49 +238,33 @@ public class RedisSync {
                 FTBQuestsSync.LOGGER.info(
                         "Force reload on login: no DB row for team={} (player={}) - keeping local state",
                         teamId, recipient.getUUID());
-                MySQLBackend.setTeamLoadState(teamId, MySQLBackend.TeamLoadState.NEW);
                 return;
             }
             server.execute(() -> {
-                try {
-                    if (!Config.syncQuests) return;
-                    if (recipient.connection == null) return;
-                    BaseQuestFile file = FTBQuestsAPI.api().getQuestFile(false);
-                    if (file == null) return;
+            try {
+                if (!Config.syncQuests) return;
+                BaseQuestFile file = FTBQuestsAPI.api().getQuestFile(false);
+                Map<UUID, TeamData> map = getTeamDataMap(file);
+                if (map == null) return;
 
-                    TeamData staging = new TeamData(teamId, file);
-                    staging.deserializeNBT(SNBTCompoundTag.of(fresh));
-                    clearCachedProgress(staging);
+                TeamData teamData = new TeamData(teamId, file);
+                teamData.deserializeNBT(SNBTCompoundTag.of(fresh));
+                map.put(teamId, teamData);
 
-                    TeamData live = file.getOrCreateTeamData(teamId);
-                    try {
-                        live.deserializeNBT(SNBTCompoundTag.of(staging.serializeNBT()));
-                    } catch (Exception rollbackEx) {
-                        FTBQuestsSync.LOGGER.error(
-                                "Rollback: could not write staging into live TeamData for team={} — local state preserved",
-                                teamId, rollbackEx);
-                        return;
-                    }
-                    clearCachedProgress(live);
-                    clearRewardsBlocked(live);
-                    MySQLBackend.setTeamLoadState(teamId, MySQLBackend.TeamLoadState.LOADED);
-
-                    new SyncTeamDataMessage(live, true).sendTo(java.util.List.of(recipient));
-                    RankSoloProgress.pushToPlayerAsync(live, recipient);
-                    server.tell(new net.minecraft.server.TickTask(server.getTickCount() + 40, () -> RankSoloProgress.pushToPlayerAsync(live, recipient)));
-                    FTBQuestsSync.LOGGER.info(
-                            "Force reload on login: team={} pushed SyncTeamDataMessage to player={}",
-                            teamId, recipient.getUUID());
-                } catch (Exception e) {
-                    FTBQuestsSync.LOGGER.error(
-                            "Force reload on login failed for team={} player={}",
-                            teamId, recipient.getUUID(), e);
-                }
+                new SyncTeamDataMessage(teamData, true).sendTo(java.util.List.of(recipient));
+                FTBQuestsSync.LOGGER.info(
+                        "Force reload on login: team={} pushed SyncTeamDataMessage to player={}",
+                        teamId, recipient.getUUID());
+            } catch (Exception e) {
+                FTBQuestsSync.LOGGER.error(
+                        "Force reload on login failed for team={} player={}",
+                        teamId, recipient.getUUID(), e);
+            }
             });
         });
     }
 
-    private void applyRemoteUpdate(UUID teamId, CompoundTag fresh, boolean forceReplace) {
+    private void applyRemoteUpdate(UUID teamId, CompoundTag fresh) {
         try {
             if (!Config.syncQuests) return;
 
@@ -346,12 +275,11 @@ public class RedisSync {
             TeamData existing = map.get(teamId);
             TeamData teamData;
             boolean mergedLocalProgress = false;
-            CompoundTag localBeforeMerge = null;
 
             // Declare merged here so it's accessible in the lambda below
             CompoundTag merged = null;
 
-            if (existing != null && !forceReplace) {
+            if (existing != null) {
                 // MERGE local + remote so concurrent edits across servers don't
                 // erase each other. Without this, last-writer-wins replacement
                 // wipes completions made between local save and remote receive.
@@ -364,18 +292,8 @@ public class RedisSync {
                             teamId, serFail);
                     localTag = null;
                 }
-                localBeforeMerge = localTag == null ? null : localTag.copy();
-                merged = (localTag != null) ? mergeTeamDataNbt(localTag, fresh, file) : fresh;
-                TeamData mergeStaging = new TeamData(teamId, file);
-                mergeStaging.deserializeNBT(SNBTCompoundTag.of(merged));
-                try {
-                    existing.deserializeNBT(SNBTCompoundTag.of(mergeStaging.serializeNBT()));
-                } catch (Exception rollbackEx) {
-                    FTBQuestsSync.LOGGER.error(
-                            "Rollback: applyRemoteUpdate could not write merged state into live team={} — remote update dropped",
-                            teamId, rollbackEx);
-                    return;
-                }
+                merged = (localTag != null) ? mergeTeamDataNbt(localTag, fresh) : fresh;
+                existing.deserializeNBT(SNBTCompoundTag.of(merged));
                 teamData = existing;
                 mergedLocalProgress = localTag != null && !nbtEquals(merged, fresh);
                 if (mergedLocalProgress) {
@@ -389,20 +307,6 @@ public class RedisSync {
                         FTBQuestsSync.LOGGER.debug("Could not mark merged team {} dirty", teamId, e);
                     }
                 }
-            } else if (existing != null) {
-                merged = fresh;
-                TeamData replaceStaging = new TeamData(teamId, file);
-                replaceStaging.deserializeNBT(SNBTCompoundTag.of(fresh));
-                try {
-                    existing.deserializeNBT(SNBTCompoundTag.of(replaceStaging.serializeNBT()));
-                } catch (Exception rollbackEx) {
-                    FTBQuestsSync.LOGGER.error(
-                            "Rollback: applyRemoteUpdate could not write replacement state into live team={} — remote update dropped",
-                            teamId, rollbackEx);
-                    return;
-                }
-                teamData = existing;
-                FTBQuestsSync.LOGGER.info("forceReplace applied to team {}", teamId);
             } else {
                 merged = fresh;
                 teamData = new TeamData(teamId, file);
@@ -410,42 +314,20 @@ public class RedisSync {
                 map.put(teamId, teamData);
             }
 
-            MySQLBackend.setTeamLoadState(teamId, MySQLBackend.TeamLoadState.LOADED);
-            clearRewardsBlocked(teamData);
-            boolean advancedShopCycle = !forceReplace && localBeforeMerge != null && hasAdvancedShopCycle(localBeforeMerge, fresh, file);
-            int forcedShopResets = ShopRepeatableSync.resetAllCompleteShopQuests(teamData);
             final TeamData finalTeamData = teamData;
             final boolean finalMerged = mergedLocalProgress;
-            CompoundTag deltaSnapshot = forcedShopResets > 0 ? ((CompoundTag) teamData.serializeNBT()).copy() : merged;
-            final CompoundTag finalDeltaSnapshot = deltaSnapshot;
-            final CompoundTag finalLocalBeforeMerge = localBeforeMerge;
-            final CompoundTag finalFresh = fresh;
-            final boolean finalAdvancedShopCycle = advancedShopCycle;
-            final int finalForcedShopResets = forcedShopResets;
+            CompoundTag deltaSnapshot = merged;
             FTBTeamsAPI.api().getManager().getTeamByID(teamId).ifPresent(team -> {
-                if (!Config.sendFullTeamData && !finalAdvancedShopCycle && finalForcedShopResets == 0) return;
+                if (!Config.sendFullTeamData) return;
                 Collection<ServerPlayer> members = team.getOnlineMembers();
                 if (!members.isEmpty()) {
                     ArrayList<ServerPlayer> memberList = new ArrayList<>(members);
 
                     new SyncTeamDataMessage(finalTeamData, true).sendTo(memberList);
-                    if (finalAdvancedShopCycle) {
-                        sendShopResetPacketsForAdvancedCycles(file, finalLocalBeforeMerge, finalFresh, teamId, memberList);
-                    }
-                    for (ServerPlayer m : memberList) {
-                        try {
-                            TeamData selfData = TeamData.get(m);
-                            if (selfData.getTeamId().equals(finalTeamData.getTeamId())) {
-                                server.tell(new net.minecraft.server.TickTask(server.getTickCount() + 1, () -> RankSoloProgress.pushToPlayerAsync(selfData, m)));
-                            }
-                        } catch (Exception e) {
-                            FTBQuestsSync.LOGGER.debug("Solo re-push skipped for {}", m.getUUID(), e);
-                        }
-                    }
 
                     // Send ObjectCompletedMessage for each completed quest so the
                     // client refreshes its quest GUI and shows toast notifications.
-                    CompoundTag completedNbt = finalDeltaSnapshot.getCompound("completed");
+                    CompoundTag completedNbt = deltaSnapshot.getCompound("completed");
                     if (!completedNbt.isEmpty()) {
                         for (String key : completedNbt.getAllKeys()) {
                             try {
@@ -456,31 +338,9 @@ public class RedisSync {
                             }
                         }
                     }
-
-                    // Completion toast for OTHER-server teammates: ObjectCompletedMessage only
-                    // refreshes their GUI, no popup. Diff newly-completed vs before-merge; the
-                    // size<=5 + non-null guards suppress toast spam on initial/catch-up syncs.
-                    CompoundTag beforeCompleted = finalLocalBeforeMerge != null
-                            ? finalLocalBeforeMerge.getCompound("completed") : new CompoundTag();
-                    java.util.List<Long> newlyCompleted = new java.util.ArrayList<>();
-                    for (String key : completedNbt.getAllKeys()) {
-                        if (!beforeCompleted.contains(key)) {
-                            try {
-                                newlyCompleted.add(Long.parseLong(key, 16));
-                            } catch (NumberFormatException ignored) {
-                            }
-                        }
-                    }
-                    if (finalLocalBeforeMerge != null && !newlyCompleted.isEmpty() && newlyCompleted.size() <= 5) {
-                        for (long objectId : newlyCompleted) {
-                            new DisplayCompletionToastMessage(objectId).sendTo(memberList);
-                        }
-                        FTBQuestsSync.LOGGER.info("Sent {} completion toast(s) to {} teammate(s) for team {}",
-                                newlyCompleted.size(), memberList.size(), teamId);
-                    }
                     // UpdateTaskProgressMessage takes (TeamData, long, long) in
                     // this FTB Quests version (2001.4.18).
-                    CompoundTag progressNbt = finalDeltaSnapshot.getCompound("task_progress");
+                    CompoundTag progressNbt = deltaSnapshot.getCompound("task_progress");
                     if (!progressNbt.isEmpty()) {
                         for (String key : progressNbt.getAllKeys()) {
                             try {
@@ -494,14 +354,14 @@ public class RedisSync {
                     }
 
                     FTBQuestsSync.LOGGER.info(
-                            "Applied remote team update: team={} players={} forceReplace={} mergedLocalProgress={} forcedShopResets={} completed={} progress={}",
-                            teamId, members.size(), forceReplace, finalMerged, finalForcedShopResets,
-                            finalDeltaSnapshot.getCompound("completed").size(),
-                            finalDeltaSnapshot.getCompound("task_progress").size());
+                            "Applied remote team update: team={} players={} mergedLocalProgress={} completed={} progress={}",
+                            teamId, members.size(), finalMerged,
+                            deltaSnapshot.getCompound("completed").size(),
+                            deltaSnapshot.getCompound("task_progress").size());
                 } else {
                     FTBQuestsSync.LOGGER.info(
-                            "Applied remote team update: team={} no online members forceReplace={} mergedLocalProgress={} forcedShopResets={}",
-                            teamId, forceReplace, finalMerged, finalForcedShopResets);
+                            "Applied remote team update: team={} no online members mergedLocalProgress={}",
+                            teamId, finalMerged);
                 }
             });
         } catch (Exception e) {
@@ -526,123 +386,27 @@ public class RedisSync {
      * from the remote snapshot when present so server-driven config edits
      * still propagate.
      */
-    static CompoundTag mergeTeamDataNbt(CompoundTag local, CompoundTag remote, BaseQuestFile file) {
+    static CompoundTag mergeTeamDataNbt(CompoundTag local, CompoundTag remote) {
         CompoundTag out = local.copy();
-        CompoundTag remoteForMerge = remote.copy();
         for (String key : remote.getAllKeys()) {
             if (!out.contains(key)) {
                 out.put(key, remote.get(key).copy());
             }
         }
-        applyShopCycleMergePolicy(out, local, remoteForMerge, file);
-        mergeMapMinLong(out, remoteForMerge, "started");
-        mergeMapMinLong(out, remoteForMerge, "completed");
-        mergeMapMaxLong(out, remoteForMerge, "task_progress");
-        mergeMapMaxLong(out, remoteForMerge, "completion_count");
-        mergeCompoundUnion(out, remoteForMerge, "claimed_rewards");
-        mergeCompoundUnion(out, remoteForMerge, "repeatable");
-        mergeCompoundUnion(out, remoteForMerge, "player_data");
+        mergeMapMinLong(out, remote, "started");
+        mergeMapMinLong(out, remote, "completed");
+        mergeMapMaxLong(out, remote, "task_progress");
+        mergeMapMaxLong(out, remote, "completion_count");
+        mergeCompoundUnion(out, remote, "claimed_rewards");
+        mergeCompoundUnion(out, remote, "repeatable");
+        mergeCompoundUnion(out, remote, "player_data");
         // Scalars: prefer remote (server-driven) where it actually has the key.
         for (String scalar : new String[]{"name", "lock", "rewards_blocked"}) {
-            if (remoteForMerge.contains(scalar)) {
-                out.put(scalar, remoteForMerge.get(scalar).copy());
+            if (remote.contains(scalar)) {
+                out.put(scalar, remote.get(scalar).copy());
             }
         }
         return out;
-    }
-
-    private static void applyShopCycleMergePolicy(CompoundTag out, CompoundTag local, CompoundTag remote, BaseQuestFile file) {
-        if (file == null) return;
-        for (Chapter chapter : file.getAllChapters()) {
-            if (!Config.teamClaimChapterIds.contains(chapter.getId())) continue;
-            for (Quest quest : chapter.getQuests()) {
-                String questKey = code(quest.id);
-                int localCycle = local.getCompound("completion_count").getInt(questKey);
-                int remoteCycle = remote.getCompound("completion_count").getInt(questKey);
-                if (remoteCycle > localCycle) {
-                    clearShopQuestState(out, quest);
-                } else if (remoteCycle < localCycle) {
-                    clearShopQuestState(remote, quest);
-                }
-            }
-        }
-    }
-
-    private static boolean hasAdvancedShopCycle(CompoundTag local, CompoundTag remote, BaseQuestFile file) {
-        if (local == null || remote == null || file == null) return false;
-        for (Chapter chapter : file.getAllChapters()) {
-            if (!Config.teamClaimChapterIds.contains(chapter.getId())) continue;
-            for (Quest quest : chapter.getQuests()) {
-                String questKey = code(quest.id);
-                if (remote.getCompound("completion_count").getInt(questKey)
-                        > local.getCompound("completion_count").getInt(questKey)) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    private static void clearShopQuestState(CompoundTag tag, Quest quest) {
-        removeMapKey(tag, "started", quest.id);
-        removeMapKey(tag, "completed", quest.id);
-        removeMapKey(tag, "repeatable", quest.id);
-        removeMapKey(tag, "completion_count", quest.id);
-        for (Task task : quest.getTasks()) {
-            removeMapKey(tag, "started", task.id);
-            removeMapKey(tag, "completed", task.id);
-            removeMapKey(tag, "task_progress", task.id);
-        }
-        Set<Long> rewardIds = new HashSet<>();
-        for (Reward reward : quest.getRewards()) {
-            rewardIds.add(reward.id);
-        }
-        removeClaimedRewardKeys(tag, rewardIds);
-    }
-
-    private static void removeMapKey(CompoundTag root, String key, long id) {
-        CompoundTag map = root.getCompound(key).copy();
-        map.remove(code(id));
-        root.put(key, map);
-    }
-
-    private static void removeClaimedRewardKeys(CompoundTag root, Set<Long> rewardIds) {
-        if (rewardIds.isEmpty()) return;
-        CompoundTag claimed = root.getCompound("claimed_rewards").copy();
-        for (String key : new ArrayList<>(claimed.getAllKeys())) {
-            try {
-                if (rewardIds.contains(QuestKey.fromString(key).id())) {
-                    claimed.remove(key);
-                }
-            } catch (Exception ignored) {
-                // Ignore malformed keys from older data; vanilla will skip them too.
-            }
-        }
-        root.put("claimed_rewards", claimed);
-    }
-
-    private void sendShopResetPacketsForAdvancedCycles(
-            BaseQuestFile file, CompoundTag local, CompoundTag remote, UUID teamId, Collection<ServerPlayer> members) {
-        if (file == null || local == null || remote == null || members.isEmpty()) return;
-        for (Chapter chapter : file.getAllChapters()) {
-            if (!Config.teamClaimChapterIds.contains(chapter.getId())) continue;
-            for (Quest quest : chapter.getQuests()) {
-                String questKey = code(quest.id);
-                int localCycle = local.getCompound("completion_count").getInt(questKey);
-                int remoteCycle = remote.getCompound("completion_count").getInt(questKey);
-                if (remoteCycle <= localCycle) continue;
-                new ObjectCompletedResetMessage(teamId, quest.id).sendTo(members);
-                for (Reward reward : quest.getRewards()) {
-                    new ResetRewardMessage(teamId, Util.NIL_UUID, reward.id).sendTo(members);
-                }
-                FTBQuestsSync.LOGGER.info("Sent shop reset packets for remote advanced cycle: team={} quest={} {}->{}",
-                        teamId, quest.id, localCycle, remoteCycle);
-            }
-        }
-    }
-
-    private static String code(long id) {
-        return QuestObjectBase.getCodeString(id);
     }
 
     private static void mergeMapMinLong(CompoundTag out, CompoundTag remote, String key) {
@@ -694,57 +458,6 @@ public class RedisSync {
             return a.equals(b);
         } catch (Exception e) {
             return false;
-        }
-    }
-
-    private static volatile java.lang.reflect.Field rewardsBlockedField;
-    private static volatile boolean rewardsBlockedFieldChecked = false;
-
-    private static void clearRewardsBlocked(TeamData td) {
-        if (!rewardsBlockedFieldChecked) {
-            synchronized (RedisSync.class) {
-                if (!rewardsBlockedFieldChecked) {
-                    try {
-                        rewardsBlockedField = TeamData.class.getDeclaredField("rewardsBlocked");
-                        rewardsBlockedField.setAccessible(true);
-                    } catch (NoSuchFieldException e) {
-                        FTBQuestsSync.LOGGER.warn("TeamData.rewardsBlocked field not found");
-                    }
-                    rewardsBlockedFieldChecked = true;
-                }
-            }
-        }
-        if (rewardsBlockedField == null) return;
-        try {
-            rewardsBlockedField.setBoolean(td, false);
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.debug("clearRewardsBlocked failed", e);
-        }
-    }
-
-    private static volatile Method clearCachedProgressMethod;
-    private static volatile boolean clearCachedProgressChecked = false;
-
-    private static void clearCachedProgress(TeamData td) {
-        if (!clearCachedProgressChecked) {
-            synchronized (RedisSync.class) {
-                if (!clearCachedProgressChecked) {
-                    try {
-                        clearCachedProgressMethod = TeamData.class.getMethod("clearCachedProgress");
-                    } catch (NoSuchMethodException e) {
-                        FTBQuestsSync.LOGGER.warn(
-                                "TeamData.clearCachedProgress() not found — stale quest caches will not be"
-                                + " invalidated after reload (FTB Quests version mismatch?)");
-                    }
-                    clearCachedProgressChecked = true;
-                }
-            }
-        }
-        if (clearCachedProgressMethod == null) return;
-        try {
-            clearCachedProgressMethod.invoke(td);
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.debug("clearCachedProgress invocation failed", e);
         }
     }
 

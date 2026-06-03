@@ -3,10 +3,7 @@ package net.agrarius.ftbquestssync.mixin;
 import net.agrarius.ftbquestssync.FTBQuestsSync;
 import net.agrarius.ftbquestssync.Config;
 import net.agrarius.ftbquestssync.MySQLBackend;
-import net.agrarius.ftbquestssync.ShopCycleReset;
-import net.agrarius.ftbquestssync.ShopRepeatableSync;
 import dev.ftb.mods.ftbquests.quest.BaseQuestFile;
-import dev.ftb.mods.ftbquests.quest.Quest;
 import dev.ftb.mods.ftbquests.quest.TeamData;
 import dev.ftb.mods.ftbquests.quest.reward.Reward;
 import net.minecraft.ChatFormatting;
@@ -21,6 +18,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.util.UUID;
+import dev.ftb.mods.ftbquests.net.SyncTeamDataMessage;
+import net.agrarius.ftbquestssync.MySQLBackend.SaveResult;
 import net.agrarius.ftbquestssync.RedisSync;
 import net.agrarius.ftbquestssync.RankSoloProgress;
 import dev.ftb.mods.ftbquests.quest.reward.RewardClaimType;
@@ -36,14 +35,9 @@ import dev.ftb.mods.ftblibrary.snbt.SNBTCompoundTag;
  * local (stale) {@code teamDataMap} entry without R → grants the items AGAIN
  * → duplicate.
  *
- * Scope policy (as of 1.0.6):
- *   PLAYER scope — only when the chapter is in soloChapterIds AND is NOT
- *                  overridden by teamClaimChapterIds (e.g. ranks, QoL).
- *   TEAM scope   — everything else, including all regular quest chapters
- *                  (early_game, mid_game, …). One reward per team cross-server.
- *
- * teamClaimChapterIds acts as an explicit TEAM-override: a chapter listed there
- * is always TEAM-scoped even if it also appears in soloChapterIds (e.g. shop).
+ * Guard: async atomic INSERT IGNORE into scoped reward table. Shared rewards
+ * use TEAM scope; solo-policy rewards use PLAYER scope so rank/shop rewards
+ * are not accidentally consumed by teammates.
  *
  * DB outages follow {@code rewardFailClosed}. Production should fail closed for
  * economy-sensitive rewards.
@@ -53,9 +47,6 @@ public abstract class RewardClaimMixin {
 
     @Unique
     private static final ThreadLocal<Boolean> ftbQuestsSync$bypassClaimGuard = ThreadLocal.withInitial(() -> false);
-
-    @Unique
-    private static final ThreadLocal<ShopCycleReset> ftbQuestsSync$pendingShopReset = new ThreadLocal<>();
 
     @Shadow
     private UUID teamId;
@@ -81,75 +72,45 @@ public abstract class RewardClaimMixin {
         if (reward == null) return;
         if (ftbQuestsSync$bypassClaimGuard.get()) return;
 
-        long chapterId = reward.getQuest().getChapter() != null ? reward.getQuest().getChapter().getId() : 0L;
-        boolean teamClaimOverride = Config.teamClaimChapterIds.contains(chapterId);
-        boolean teamShared = Config.teamSharedChapterIds.contains(chapterId) && !teamClaimOverride;
         boolean rankQuestReward = RankSoloProgress.isRankQuest(reward.getQuest().id);
-        boolean soloChapter = Config.soloChapterIds.contains(chapterId) && !teamClaimOverride && !teamShared;
-        boolean soloScopedReward = (rankQuestReward || soloChapter) && Config.soloRewardsPerPlayer;
-
-        if (!soloScopedReward && !teamClaimOverride && !teamShared) {
-            FTBQuestsSync.LOGGER.info(
-                    "claimReward pass-through (vanilla): player={} quest={} reward={} chapter={}",
-                    player.getUUID(), reward.getQuest().id, reward.id, String.format("%016X", chapterId));
-            return;
-        }
 
         RewardClaimType claimType = getClaimType(player.getUUID(), reward);
-        FTBQuestsSync.LOGGER.info(
-                "claimReward: player={} quest={} reward={} claimType={} rankQuest={} solo={} teamOverride={}",
-                player.getUUID(), reward.getQuest().id, reward.id, claimType, rankQuestReward, soloScopedReward, teamClaimOverride);
         if (claimType == RewardClaimType.CANT_CLAIM || claimType == RewardClaimType.CLAIMED) {
             ci.cancel();
             return;
         }
 
-        if (rankQuestReward && !RankSoloProgress.isPlayerSoloQuestComplete(player.getUUID(), reward.getQuest())) {
-            ci.cancel();
-            return;
-        }
-
-        if (soloScopedReward && !teamClaimOverride && RankSoloProgress.isRepeatableSoloQuest(reward.getQuest().id)) {
+        boolean soloScopedReward = rankQuestReward && Config.soloRewardsPerPlayer;
+        if (soloScopedReward && RankSoloProgress.isRepeatableSoloQuest(reward.getQuest().id)) {
             FTBQuestsSync.LOGGER.info(
                     "Bypassing DB reward dedupe for repeatable solo reward: player={} team={} quest={} reward={}",
                     player.getUUID(), teamId, reward.getQuest().id, reward.id);
             return;
         }
-
-        // TEAM scope by default; PLAYER only for solo chapters (ranks/QoL) not overridden by teamClaimChapterIds.
-        String scopeType = (soloScopedReward && Config.teamRewardsDedupGlobal) ? "PLAYER" : "TEAM";
+        String scopeType = (!soloScopedReward && reward.isTeamReward() && Config.teamRewardsDedupGlobal) ? "TEAM" : "PLAYER";
         UUID claimUuid = "TEAM".equals(scopeType) ? teamId : player.getUUID();
         long rewardId = reward.id;
-        long cycle = (teamClaimOverride || teamShared) ? ((TeamData)(Object)this).getCompletionCount(reward.getQuest()) : 0L;
-        long[] questRewardIds = (teamClaimOverride || teamShared) ? ShopRepeatableSync.rewardIds(reward.getQuest()) : new long[]{rewardId};
 
         ci.cancel();
         UUID tid = teamId;
-        MySQLBackend.getInstance()
-                .tryClaimRewardScopedAsync(tid, rewardId, scopeType, claimUuid, cycle, now, questRewardIds)
-                .whenComplete((claimResult, error) -> {
+        MySQLBackend.getInstance().tryClaimRewardScopedAsync(tid, rewardId, scopeType, claimUuid, now).whenComplete((firstClaim, error) -> {
             player.getServer().execute(() -> {
-                if (error != null || claimResult == null || !claimResult.firstClaim) {
+                if (error != null || !Boolean.TRUE.equals(firstClaim)) {
                     player.sendSystemMessage(Component
                             .literal("Reward already claimed on another server.")
                             .withStyle(ChatFormatting.RED));
                     FTBQuestsSync.LOGGER.info(
-                            "Cancelled duplicate claimReward: player={} team={} reward={} scopeType={} cycle={} error={}",
-                            player.getUUID(), tid, rewardId, scopeType, cycle,
-                            error == null ? "none" : error.getClass().getSimpleName());
+                            "Cancelled duplicate claimReward: player={} team={} reward={} scopeType={} error={}",
+                            player.getUUID(), tid, rewardId, scopeType, error == null ? "none" : error.getClass().getSimpleName());
                     RedisSync.getInstance().forceReloadAndPushTo(tid, player);
                     return;
                 }
 
                 try {
-                    if (teamClaimOverride && claimResult.cycleComplete) {
-                        ftbQuestsSync$pendingShopReset.set(new ShopCycleReset(reward.getQuest(), player.getUUID(), now, cycle));
-                    }
                     ftbQuestsSync$bypassClaimGuard.set(true);
                     claimReward(player, reward, notify, now);
                 } finally {
                     ftbQuestsSync$bypassClaimGuard.set(false);
-                    ftbQuestsSync$pendingShopReset.remove();
                 }
             });
         });
@@ -161,33 +122,23 @@ public abstract class RewardClaimMixin {
             cancellable = true)
     private void ftbQuestsSync$rankSoloClaimType(UUID playerUuid, Reward reward, CallbackInfoReturnable<RewardClaimType> cir) {
         if (file == null || !file.isServerSide() || reward == null || !RankSoloProgress.isRankQuest(reward.getQuest().id)) return;
-        boolean playerComplete = RankSoloProgress.isPlayerSoloQuestComplete(playerUuid, reward.getQuest());
-        if (!playerComplete) {
-            cir.setReturnValue(RewardClaimType.CANT_CLAIM);
-            return;
-        }
-        if (cir.getReturnValue() == RewardClaimType.CANT_CLAIM) {
+        if (cir.getReturnValue() == RewardClaimType.CANT_CLAIM
+                && RankSoloProgress.isPlayerSoloQuestComplete(playerUuid, reward.getQuest().id)) {
             cir.setReturnValue(RewardClaimType.CAN_CLAIM);
         }
     }
 
     @Inject(method = "resetReward(Ljava/util/UUID;Ldev/ftb/mods/ftbquests/quest/reward/Reward;)Z", at = @At("RETURN"))
     private void ftbQuestsSync$onResetReward(UUID claimUuid, Reward reward, CallbackInfoReturnable<Boolean> cir) {
-        if (!FTBQuestsSync.serverStarted) return;
         if (file == null || !file.isServerSide() || reward == null || !Boolean.TRUE.equals(cir.getReturnValue())) return;
-        long chapterId = reward.getQuest().getChapter() != null ? reward.getQuest().getChapter().getId() : 0L;
-        boolean teamClaimOverride = Config.teamClaimChapterIds.contains(chapterId);
-        if (teamClaimOverride) return;
-        boolean soloChapter = Config.soloChapterIds.contains(chapterId) && !teamClaimOverride;
-        boolean soloScopedReward = (RankSoloProgress.isRankQuest(reward.getQuest().id) || soloChapter) && Config.soloRewardsPerPlayer;
-        String scopeType = (soloScopedReward && Config.teamRewardsDedupGlobal) ? "PLAYER" : "TEAM";
+        boolean soloScopedReward = RankSoloProgress.isRankQuest(reward.getQuest().id) && Config.soloRewardsPerPlayer;
+        String scopeType = (!soloScopedReward && reward.isTeamReward() && Config.teamRewardsDedupGlobal) ? "TEAM" : "PLAYER";
         UUID scopeUuid = "TEAM".equals(scopeType) ? teamId : claimUuid;
         MySQLBackend.getInstance().deleteRewardClaimScopedAsync(scopeType, scopeUuid, reward.id);
     }
 
     @Inject(method = "deleteReward(Ldev/ftb/mods/ftbquests/quest/reward/Reward;)V", at = @At("RETURN"))
     private void ftbQuestsSync$onDeleteReward(Reward reward, CallbackInfo ci) {
-        if (!FTBQuestsSync.serverStarted) return;
         if (file == null || !file.isServerSide() || reward == null) return;
         MySQLBackend.getInstance().deleteAllClaimsForRewardAsync(teamId, reward.id);
     }
@@ -198,10 +149,6 @@ public abstract class RewardClaimMixin {
     private void ftbQuestsSync$forceSaveAfterClaim(ServerPlayer player, Reward reward, boolean notify, long now, CallbackInfo ci) {
         if (file == null || !file.isServerSide() || !MySQLBackend.getInstance().isAvailable()) return;
         if (!ftbQuestsSync$bypassClaimGuard.get()) return;
-        ShopCycleReset reset = ftbQuestsSync$pendingShopReset.get();
-        if (reset != null && reward != null && reset.quest == reward.getQuest()) {
-            ShopRepeatableSync.resetIfCycleComplete((TeamData)(Object)this, reset.quest, reset.playerUuid, reset.now, reset.cycle);
-        }
         try {
             CompoundTag snapshot = ((CompoundTag) serializeNBT()).copy();
             UUID tid = teamId;

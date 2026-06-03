@@ -7,7 +7,7 @@ plugins {
     id 'com.github.johnrengelman.shadow' version '8.1.1'
 }
 
-version = '1.1.2'
+version = '1.0.3'
 group = 'net.agrarius.ftbquestssync'
 archivesBaseName = 'ftb-quests-mysql-sync'
 
@@ -54,7 +54,6 @@ dependencies {
 
     compileOnly files(
         "${rootDir}/libs/ftb-quests-forge-2001.4.18.jar",
-        "${rootDir}/libs/ftb-chunks-forge-2001.3.6.jar",
         "${rootDir}/libs/ftb-teams-forge-2001.3.2.jar",
         "${rootDir}/libs/ftb-library-forge-2001.2.12.jar",
         "${rootDir}/libs/architectury-9.2.14-forge.jar"
@@ -81,13 +80,8 @@ jar {
 }
 
 shadowJar {
-    outputs.upToDateWhen { false }
-    archiveBaseName.set(archivesBaseName)
-    archiveVersion.set(project.version.toString())
-    archiveClassifier.set('')
-    destinationDirectory.set(layout.buildDirectory.dir('libs'))
+    archiveClassifier = ''
     configurations = [project.configurations.shade]
-    from sourceSets.main.output
     relocate 'com.zaxxer.hikari',    'net.agrarius.ftbquestssync.shaded.hikari'
     relocate 'com.mysql',            'net.agrarius.ftbquestssync.shaded.mysql'
     relocate 'redis.clients.jedis',  'net.agrarius.ftbquestssync.shaded.jedis'
@@ -129,10 +123,6 @@ shadowJar {
 
 reobf {
     shadowJar {}
-}
-
-tasks.named('reobfShadowJar') {
-    dependsOn shadowJar
 }
 
 tasks.withType(JavaCompile).configureEach {

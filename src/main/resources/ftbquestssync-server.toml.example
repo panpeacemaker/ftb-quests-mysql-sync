@@ -15,8 +15,7 @@ redisPort = 6379
 redisPassword = ""
 
 [server]
-# Optional JVM property override e.g. -Dluckperms.server=server1/server2
-# TOML serverId wins over JVM fallback.
+# Optional if JVM has -Dluckperms.server=server1/server2; explicit TOML wins over that fallback.
 serverId = "server1"
 
 [features]

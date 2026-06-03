@@ -17,7 +17,7 @@ import java.util.UUID;
  *   1. -Dftbquestssync.server.id
  *   2. TOML key `serverId`
  *   3. -Dftbquestssync.serverId  (legacy)
- *   4. -Dluckperms.server       (AT convention)
+ *   4. -Dluckperms.server       (AT/Marcus convention)
  *   5. "unknown-<random8hex>"    (UNSTABLE — restart generates new id;
  *                                  set #1 or #2 in production!)
  */
@@ -39,24 +39,14 @@ public final class Config {
 
     public static boolean syncQuests = true;
     public static boolean syncTeams = false;
-    public static boolean syncChunks = false;
-    public static boolean chunkSeedOnStart = false;
-    public static String chunkCanonicalServerId = "agr1";
-    public static boolean chunkForceLoadSync = true;
     public static boolean sendFullTeamData = true;
     public static boolean sendDeltaPackets = false;
     public static String conflictPolicy = "reload_remote";
     public static String policyMode = "blacklist";
-    public static Set<Long> soloChapterIds = Set.of(0x3622ED01311E6763L, 0x67F6F5055518AC4FL);
-    public static Set<Long> repeatableSoloChapterIds = Set.of();
+    public static Set<Long> soloChapterIds = Set.of(0x3622ED01311E6763L, 0x3CEC7F7BAD54E4C6L);
+    public static Set<Long> repeatableSoloChapterIds = Set.of(0x3622ED01311E6763L, 0x3CEC7F7BAD54E4C6L);
     public static Set<Long> soloQuestIds = Set.of();
     public static Set<Long> soloTaskIds = Set.of();
-    public static Set<Long> teamClaimChapterIds = Set.of(0x3CEC7F7BAD54E4C6L);
-    public static Set<Long> teamSharedChapterIds = Set.of(
-            0x330C551154E3E367L, 0x312B5D7DC7779EFEL, 0x2742F3918C76DA81L, 0x37CD2B0E77E895EDL,
-            0x587F453EE1BAFB79L, 0x13B88A5F6D9187F8L, 0x75C4C0229F2D2798L, 0x459D60183D34C29EL,
-            0x5617484BFC479624L, 0x450EB2B6DF25A9ECL, 0x05330DA4070C75C9L, 0x62A72817F92AC262L,
-            0x4BF4EE11E23C71FCL, 0x10A89CD14C4DAF63L, 0x54A26707B4CD39CCL, 0x74FB988DE790BE0DL);
     public static boolean syncSoloProgressPerPlayer = true;
     public static boolean soloRewardsPerPlayer = true;
     public static boolean teamRewardsDedupGlobal = true;
@@ -87,10 +77,6 @@ public final class Config {
 
         syncQuests = boolProp("ftbquestssync.syncQuests", toml.getOrDefault("syncQuests", String.valueOf(syncQuests)), syncQuests);
         syncTeams = boolProp("ftbquestssync.syncTeams", toml.getOrDefault("syncTeams", String.valueOf(syncTeams)), syncTeams);
-        syncChunks = boolProp("ftbquestssync.syncChunks", toml.getOrDefault("syncChunks", String.valueOf(syncChunks)), syncChunks);
-        chunkSeedOnStart = boolProp("ftbquestssync.chunkSeedOnStart", toml.getOrDefault("chunkSeedOnStart", String.valueOf(chunkSeedOnStart)), chunkSeedOnStart);
-        chunkCanonicalServerId = prop("ftbquestssync.chunkCanonicalServerId", toml.getOrDefault("chunkCanonicalServerId", chunkCanonicalServerId)).trim();
-        chunkForceLoadSync = boolProp("ftbquestssync.chunkForceLoadSync", toml.getOrDefault("chunkForceLoadSync", String.valueOf(chunkForceLoadSync)), chunkForceLoadSync);
         sendFullTeamData = boolProp("ftbquestssync.sendFullTeamData", toml.getOrDefault("sendFullTeamData", String.valueOf(sendFullTeamData)), sendFullTeamData);
         sendDeltaPackets = boolProp("ftbquestssync.sendDeltaPackets", toml.getOrDefault("sendDeltaPackets", String.valueOf(sendDeltaPackets)), sendDeltaPackets);
         conflictPolicy = prop("ftbquestssync.conflictPolicy", toml.getOrDefault("conflictPolicy", conflictPolicy));
@@ -103,8 +89,6 @@ public final class Config {
         repeatableSoloChapterIds = longSetProp("ftbquestssync.policy.repeatableSoloChapterIds", toml.get("repeatableSoloChapterIds"), repeatableSoloChapterIds);
         soloQuestIds = longSetProp("ftbquestssync.policy.soloQuestIds", toml.get("soloQuestIds"), soloQuestIds);
         soloTaskIds = longSetProp("ftbquestssync.policy.soloTaskIds", toml.get("soloTaskIds"), soloTaskIds);
-        teamClaimChapterIds = longSetProp("ftbquestssync.policy.teamClaimChapterIds", toml.get("teamClaimChapterIds"), teamClaimChapterIds);
-        teamSharedChapterIds = longSetProp("ftbquestssync.policy.teamSharedChapterIds", toml.get("teamSharedChapterIds"), teamSharedChapterIds);
         syncSoloProgressPerPlayer = boolProp("ftbquestssync.policy.syncSoloProgressPerPlayer", toml.getOrDefault("syncSoloProgressPerPlayer", String.valueOf(syncSoloProgressPerPlayer)), syncSoloProgressPerPlayer);
         soloRewardsPerPlayer = boolProp("ftbquestssync.policy.soloRewardsPerPlayer", toml.getOrDefault("soloRewardsPerPlayer", String.valueOf(soloRewardsPerPlayer)), soloRewardsPerPlayer);
         teamRewardsDedupGlobal = boolProp("ftbquestssync.policy.teamRewardsDedupGlobal", toml.getOrDefault("teamRewardsDedupGlobal", String.valueOf(teamRewardsDedupGlobal)), teamRewardsDedupGlobal);
@@ -118,12 +102,10 @@ public final class Config {
 
         FTBQuestsSync.LOGGER.info(
                 "Config loaded: mysql={}:{} db={} user={} passwordSet={} mysqlSsl={} redis={}:{} redisPasswordSet={} serverId={} "
-                + "syncQuests={} syncTeams={} syncChunks={} chunkSeedOnStart={} chunkCanonicalServerId={} chunkForceLoadSync={} "
-                + "sendFullTeamData={} sendDeltaPackets={} conflictPolicy={}",
+                + "syncQuests={} syncTeams={} sendFullTeamData={} sendDeltaPackets={} conflictPolicy={}",
                 mysqlHost, mysqlPort, mysqlDatabase, mysqlUsername,
                 !mysqlPassword.isBlank(), mysqlUseSsl, redisHost, redisPort, !redisPassword.isBlank(), serverId,
-                syncQuests, syncTeams, syncChunks, chunkSeedOnStart, chunkCanonicalServerId, chunkForceLoadSync,
-                sendFullTeamData, sendDeltaPackets, conflictPolicy);
+                syncQuests, syncTeams, sendFullTeamData, sendDeltaPackets, conflictPolicy);
         FTBQuestsSync.LOGGER.info(
                 "Policy loaded: mode={} soloChapterIds={} repeatableSoloChapterIds={} soloQuestIds={} soloTaskIds={} syncSoloProgressPerPlayer={} soloRewardsPerPlayer={} teamRewardsDedupGlobal={} rewardFailClosed={}",
                 policyMode, soloChapterIds, repeatableSoloChapterIds, soloQuestIds, soloTaskIds,
@@ -134,22 +116,6 @@ public final class Config {
                     "serverId is unstable (random per restart). "
                     + "Set TOML `serverId = \"agrN\"`, JVM arg `-Dftbquestssync.server.id=agrN`, "
                     + "or AT-style `-Dluckperms.server=agrN`.");
-        }
-        warnIfLocalhostBackend("MySQL", mysqlHost);
-        warnIfLocalhostBackend("Redis", redisHost);
-    }
-
-    private static void warnIfLocalhostBackend(String backend, String host) {
-        if (host == null) return;
-        String normalized = host.trim().toLowerCase();
-        boolean localhost = "localhost".equals(normalized)
-                || "127.0.0.1".equals(normalized)
-                || "::1".equals(normalized)
-                || "0:0:0:0:0:0:0:1".equals(normalized);
-        if (localhost) {
-            FTBQuestsSync.LOGGER.warn(
-                    "{} host is localhost ({}). Cross-server Agrarius sync requires a shared backend reachable from every server.",
-                    backend, host);
         }
     }
 

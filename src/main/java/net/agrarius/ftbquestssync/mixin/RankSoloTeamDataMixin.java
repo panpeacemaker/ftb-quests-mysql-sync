@@ -4,8 +4,6 @@ import net.agrarius.ftbquestssync.RankSoloProgress;
 import net.agrarius.ftbquestssync.Config;
 import net.agrarius.ftbquestssync.FTBQuestsSync;
 import dev.ftb.mods.ftbquests.quest.BaseQuestFile;
-import dev.ftb.mods.ftbquests.quest.Quest;
-import dev.ftb.mods.ftbquests.quest.QuestObject;
 import dev.ftb.mods.ftbquests.quest.ServerQuestFile;
 import dev.ftb.mods.ftbquests.quest.TeamData;
 import dev.ftb.mods.ftbquests.quest.task.Task;
@@ -15,7 +13,6 @@ import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.util.UUID;
 
@@ -37,40 +34,12 @@ public abstract class RankSoloTeamDataMixin {
         RankSoloProgress.handleRankTaskProgress((TeamData) (Object) this, player, task, progress);
         if (task.getQuest() != null
                 && task.getQuest().getChapter() != null
-                && Config.teamClaimChapterIds.contains(task.getQuest().getChapter().getId())) {
+                && Config.repeatableSoloChapterIds.contains(task.getQuest().getChapter().getId())) {
             FTBQuestsSync.LOGGER.info(
                     "Allowing vanilla FTB repeatable solo progress: player={} quest={} task={} progress={}",
                     player.getUUID(), task.getQuest().id, task.id, progress);
             return;
         }
         ci.cancel();
-    }
-
-    @Inject(
-            method = "isCompleted(Ldev/ftb/mods/ftbquests/quest/QuestObject;)Z",
-            at = @At("RETURN"),
-            cancellable = true)
-    private void ftbQuestsSync$soloRankIsCompleted(QuestObject obj, CallbackInfoReturnable<Boolean> cir) {
-        if (file == null || !file.isServerSide()) return;
-
-        ServerPlayer player = ftbQuestsSync$currentPlayer();
-        if (player == null) return;
-        UUID playerUuid = player.getUUID();
-
-        if (obj instanceof Task task && RankSoloProgress.isRankTask(task.id)) {
-            cir.setReturnValue(RankSoloProgress.isPlayerSoloTaskComplete(playerUuid, task));
-            return;
-        }
-        if (obj instanceof Quest quest && RankSoloProgress.isRankQuest(quest.id)) {
-            cir.setReturnValue(RankSoloProgress.isPlayerSoloQuestComplete(playerUuid, quest));
-        }
-    }
-
-    private static ServerPlayer ftbQuestsSync$currentPlayer() {
-        try {
-            return ServerQuestFile.INSTANCE == null ? null : ServerQuestFile.INSTANCE.getCurrentPlayer();
-        } catch (Exception e) {
-            return null;
-        }
     }
 }
