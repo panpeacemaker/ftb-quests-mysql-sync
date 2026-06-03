@@ -5,6 +5,3 @@ out/
 *.iml
 run/
 logs/
-.omo/
-javap-*.txt
-HANDOFF-*.md
