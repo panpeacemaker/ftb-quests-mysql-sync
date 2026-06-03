@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Agrarius — Reset questů</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;1,400&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+  <link rel="stylesheet" href="/agrarius/agrarius.css?v=15">
+</head>
+<body>
+  <div id="auth-wall" class="auth-wall" hidden>
+    <div class="auth-card card">
+      <div class="auth-icon"><i class="fa-solid fa-lock-keyhole"></i></div>
+      <h2>Přihlášení</h2>
+      <form id="login-form" autocomplete="on" novalidate>
+        <label class="field"><span>Jméno</span><input type="text" id="login-user" name="username" autocomplete="username" required></label>
+        <label class="field"><span>Heslo</span><input type="password" id="login-pass" name="password" autocomplete="current-password" required></label>
+        <div id="login-error" class="notice notice-warn" hidden role="alert"></div>
+        <button type="submit" id="login-btn" class="btn btn-primary"><i class="fa-solid fa-right-to-bracket"></i>&nbsp;Přihlásit se</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="app" hidden>
+    <header class="topbar">
+      <div class="topbar-left">
+        <span class="topbar-title"><i class="fa-solid fa-cube"></i>Agrarius</span>
+        <span class="topbar-sub">Reset questů</span>
+        <span id="env-badge" class="badge" style="display:none"></span>
+      </div>
+      <div class="topbar-right">
+        <div class="status-dots">
+          <span class="sdot" id="dot-db"><span class="dot"></span><span class="dot-label">DB</span></span>
+          <span class="sdot" id="dot-redis"><span class="dot"></span><span class="dot-label">Redis</span></span>
+        </div>
+        <span id="user-name" class="username"></span>
+      </div>
+    </header>
+
+    <main class="ftb-shell">
+      <aside class="target-panel">
+        <section class="target-card">
+          <div class="panel-heading"><i class="fa-solid fa-crosshairs"></i><span>Cíl resetu</span></div>
+          <div class="target-toggle" role="radiogroup" aria-label="Typ cíle">
+            <label><input type="radio" name="scope-type" id="scope-player" value="PLAYER" checked><span><i class="fa-solid fa-user"></i> Hráči</span></label>
+            <label><input type="radio" name="scope-type" id="scope-team" value="TEAM"><span><i class="fa-solid fa-users"></i> Týmy</span></label>
+          </div>
+          <div class="target-search-row">
+            <i class="fa-solid fa-magnifying-glass"></i>
+            <input id="target-search" type="text" placeholder="Filtrovat seznam…" autocomplete="off" spellcheck="false">
+          </div>
+          <div id="target-count" class="target-count">Načítám…</div>
+          <div id="target-list" class="target-list" role="listbox" aria-label="Hráči a týmy"></div>
+        </section>
+        <section id="selected-target-card" class="selected-target-card" hidden>
+          <div class="panel-heading panel-heading-green"><i class="fa-solid fa-circle-check"></i><span>Vybráno</span></div>
+          <div id="selected-target-name" class="selected-target-name"></div>
+          <div id="selected-target-meta" class="selected-target-meta"></div>
+          <button type="button" id="btn-clear-target" class="btn btn-xs"><i class="fa-solid fa-xmark"></i> Změnit cíl</button>
+          <div id="target-warning" class="notice notice-warn" hidden role="alert"><i class="fa-solid fa-triangle-exclamation"></i> Hráč je v týmu — full reset může ovlivnit sdílený postup týmu.</div>
+        </section>
+      </aside>
+
+      <section class="quest-workspace">
+        <div id="empty-workspace" class="empty-workspace">
+          <i class="fa-solid fa-arrow-left"></i>
+          <h2>Vyber hráče nebo tým</h2>
+          <p>Teprve potom se otevře questbook mapa pro konkrétní cíl resetu.</p>
+        </div>
+
+        <div id="questbook-workspace" class="questbook-workspace" hidden>
+          <div class="quest-toolbar">
+            <div>
+              <div class="workspace-label">Questbook pro</div>
+              <div id="workspace-target-title" class="workspace-target-title"></div>
+            </div>
+            <div class="quest-search-row">
+              <i class="fa-solid fa-search"></i>
+              <input id="quest-search" type="text" placeholder="Najít kapitolu nebo quest…" autocomplete="off" spellcheck="false">
+              <div id="quest-search-results" class="quest-search-results" hidden></div>
+            </div>
+            <div class="workspace-actions">
+              <label class="mini-check"><input type="checkbox" id="cb-rewards" checked> odměny</label>
+              <label class="mini-check"><input type="checkbox" id="cb-ranks" checked> ranky/solo ranky</label>
+              <label class="mini-check"><input type="checkbox" id="cb-immediate" checked> ihned</label>
+              <button type="button" id="btn-refresh-questbook" class="btn"><i class="fa-solid fa-rotate"></i></button>
+            </div>
+          </div>
+
+          <div class="quest-layout">
+            <nav id="chapter-tree" class="chapter-tree" aria-label="Kapitoly questbooku"></nav>
+            <div id="quest-map-wrap" class="quest-map-wrap">
+              <svg id="quest-lines" class="quest-lines" aria-hidden="true"></svg>
+              <div id="quest-map" class="quest-map" role="application" aria-label="Mapa questů"></div>
+            </div>
+            <aside id="quest-detail" class="quest-detail">
+              <div class="detail-empty">Klikni na quest v mapě.</div>
+            </aside>
+          </div>
+
+          <div class="chapter-reset-bar">
+            <div>
+              <span id="questbook-loaded" class="qb-loaded"></span>
+              <span id="active-chapter-label" class="active-chapter-label"></span>
+            </div>
+            <div class="chapter-reset-actions">
+              <button type="button" id="btn-reset-chapter" class="btn btn-danger" disabled><i class="fa-solid fa-book-open"></i> Resetovat celou kapitolu</button>
+              <button type="button" id="btn-reset-full" class="btn btn-nuke"><i class="fa-solid fa-fire"></i> Resetovat úplně vše</button>
+            </div>
+          </div>
+        </div>
+
+        <section class="audit-card">
+          <div class="toolbar">
+            <h2 class="card-heading"><i class="fa-solid fa-clock-rotate-left"></i> Audit resetů</h2>
+            <button type="button" id="btn-refresh-audit" class="btn"><i class="fa-solid fa-rotate"></i> Obnovit</button>
+          </div>
+          <div id="audit-wrap"><div class="loader">Načítám audit…</div></div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <script src="/agrarius/agrarius.js?v=15"></script>
+</body>
+</html>
