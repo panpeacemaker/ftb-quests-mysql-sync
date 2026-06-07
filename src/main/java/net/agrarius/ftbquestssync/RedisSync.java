@@ -787,6 +787,10 @@ public class RedisSync {
         }
     }
 
+    public JedisPool getPool() {
+        return pool;
+    }
+
     public void shutdown() {
         enabled = false;
         try {

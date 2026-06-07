@@ -1,53 +1,72 @@
 package net.agrarius.ftbquestssync;
 
-import java.util.HashMap;
-import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
+/**
+ * Process-wide suppression guard for team mutations.
+ *
+ * Prevents sync loops: when the mod itself mutates a team (e.g. on remote
+ * event apply), the resulting FTB Teams events must not be echoed back to
+ * MySQL/Redis.  Replaced from ThreadLocal maps (which broke across async
+ * boundaries) to counted ConcurrentHashMaps so server.execute() callbacks
+ * and mixed sync/async paths see the same suppression state.
+ *
+ * Scopes must be kept short and closed in {@code finally}.
+ */
 public final class TeamMutationGuard {
 
-    private static final ThreadLocal<Map<UUID, Integer>> teamSuppressions = ThreadLocal.withInitial(HashMap::new);
-    private static final ThreadLocal<Map<UUID, Integer>> playerSuppressions = ThreadLocal.withInitial(HashMap::new);
+    private static final ConcurrentHashMap<UUID, AtomicInteger> teamSuppressions = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<UUID, AtomicInteger> playerSuppressions = new ConcurrentHashMap<>();
 
     private TeamMutationGuard() {
     }
 
     public static boolean isTeamSuppressed(UUID teamId) {
-        return teamSuppressions.get().getOrDefault(teamId, 0) > 0;
+        if (teamId == null) return false;
+        AtomicInteger counter = teamSuppressions.get(teamId);
+        return counter != null && counter.get() > 0;
     }
 
     public static boolean isPlayerSuppressed(UUID playerId) {
-        return playerSuppressions.get().getOrDefault(playerId, 0) > 0;
+        if (playerId == null) return false;
+        AtomicInteger counter = playerSuppressions.get(playerId);
+        return counter != null && counter.get() > 0;
     }
 
     public static Scope suppressTeam(UUID teamId) {
-        Map<UUID, Integer> map = teamSuppressions.get();
-        map.put(teamId, map.getOrDefault(teamId, 0) + 1);
-        return new Scope(map, teamId);
+        AtomicInteger counter = teamSuppressions.computeIfAbsent(teamId, k -> new AtomicInteger(0));
+        counter.incrementAndGet();
+        return new Scope(counter, teamId, true);
     }
 
     public static Scope suppressPlayer(UUID playerId) {
-        Map<UUID, Integer> map = playerSuppressions.get();
-        map.put(playerId, map.getOrDefault(playerId, 0) + 1);
-        return new Scope(map, playerId);
+        AtomicInteger counter = playerSuppressions.computeIfAbsent(playerId, k -> new AtomicInteger(0));
+        counter.incrementAndGet();
+        return new Scope(counter, playerId, false);
     }
 
     public static final class Scope implements AutoCloseable {
-        private final Map<UUID, Integer> suppressions;
+        private final AtomicInteger counter;
         private final UUID id;
+        private final boolean isTeam;
         private boolean closed;
 
-        private Scope(Map<UUID, Integer> suppressions, UUID id) {
-            this.suppressions = suppressions;
+        private Scope(AtomicInteger counter, UUID id, boolean isTeam) {
+            this.counter = counter;
             this.id = id;
+            this.isTeam = isTeam;
         }
 
         @Override
         public void close() {
             if (closed) return;
-            int depth = suppressions.getOrDefault(id, 0) - 1;
-            if (depth <= 0) suppressions.remove(id);
-            else suppressions.put(id, depth);
+            int depth = counter.decrementAndGet();
+            if (depth <= 0) {
+                ConcurrentHashMap<UUID, AtomicInteger> map = isTeam ? teamSuppressions : playerSuppressions;
+                map.remove(id, counter);
+            }
             closed = true;
         }
     }
