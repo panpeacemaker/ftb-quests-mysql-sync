@@ -118,6 +118,7 @@ public class FTBQuestsSync {
     @SubscribeEvent
     public void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) {
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
+        if (Config.syncTeams) TeamSync.getInstance().markPlayerDisconnecting(player.getUUID());
         if (player.isRemoved()) return;
         if (!Config.syncQuests) return;
         try {

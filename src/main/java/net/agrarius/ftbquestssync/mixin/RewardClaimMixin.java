@@ -87,8 +87,10 @@ public abstract class RewardClaimMixin {
         boolean rankQuestReward = RankSoloProgress.isRankQuest(reward.getQuest().id);
         boolean soloChapter = Config.soloChapterIds.contains(chapterId) && !teamClaimOverride && !teamShared;
         boolean soloScopedReward = (rankQuestReward || soloChapter) && Config.soloRewardsPerPlayer;
+        boolean effectiveTeamReward = reward.isTeamReward();
 
-        if (!soloScopedReward && !teamClaimOverride && !teamShared) {
+        // Effective team rewards outside policy sets still need MySQL dedupe to close #10.
+        if (!soloScopedReward && !teamClaimOverride && !teamShared && !effectiveTeamReward) {
             FTBQuestsSync.LOGGER.info(
                     "claimReward pass-through (vanilla): player={} quest={} reward={} chapter={}",
                     player.getUUID(), reward.getQuest().id, reward.id, String.format("%016X", chapterId));
@@ -181,8 +183,11 @@ public abstract class RewardClaimMixin {
         long chapterId = reward.getQuest().getChapter() != null ? reward.getQuest().getChapter().getId() : 0L;
         boolean teamClaimOverride = Config.teamClaimChapterIds.contains(chapterId);
         if (teamClaimOverride) return;
-        boolean soloChapter = Config.soloChapterIds.contains(chapterId) && !teamClaimOverride;
+        boolean teamShared = Config.teamSharedChapterIds.contains(chapterId) && !teamClaimOverride;
+        boolean soloChapter = Config.soloChapterIds.contains(chapterId) && !teamClaimOverride && !teamShared;
         boolean soloScopedReward = (RankSoloProgress.isRankQuest(reward.getQuest().id) || soloChapter) && Config.soloRewardsPerPlayer;
+        boolean effectiveTeamReward = reward.isTeamReward();
+        if (!soloScopedReward && !teamShared && !effectiveTeamReward) return;
         String scopeType = (soloScopedReward && Config.teamRewardsDedupGlobal) ? "PLAYER" : "TEAM";
         UUID scopeUuid = "TEAM".equals(scopeType) ? teamId : claimUuid;
         MySQLBackend.getInstance().deleteRewardClaimScopedAsync(scopeType, scopeUuid, reward.id);
