@@ -222,6 +222,10 @@ async function loadLiveSnbt() {
     return finishBook([], [], 'unconfigured');
   }
   const base = process.env.AGR_QUEST_DIR || '/opt/agrarius/config/ftbquests/quests';
+  if (!/^[A-Za-z0-9._/-]+$/.test(base)) {
+    console.error('[agrarius] invalid AGR_QUEST_DIR, refusing live fetch:', base);
+    return finishBook([], [], 'unconfigured');
+  }
   const groupsRaw = await sh(node, ct, `cat ${base}/chapter_groups.snbt 2>/dev/null`);
   let groupNames = {};
   let groups = [];
@@ -233,7 +237,10 @@ async function loadLiveSnbt() {
   const list = (await sh(node, ct, `ls ${base}/chapters/*.snbt 2>/dev/null`)).split('\n').map((x) => x.trim()).filter(Boolean);
   const chapters = [];
   for (const file of list) {
-    const raw = await sh(node, ct, `cat ${file.replace(/'/g, '')} 2>/dev/null`);
+    // Only cat paths that look like real snbt files; reject any shell metachars
+    // that could ride in through the `ls` output.
+    if (!/^[A-Za-z0-9._/-]+\.snbt$/.test(file)) { console.error('[agrarius] skip unsafe snbt path', file); continue; }
+    const raw = await sh(node, ct, `cat ${file} 2>/dev/null`);
     try { chapters.push(chapterToNode(parseSnbt(raw), groupNames)); }
     catch (e) { console.error('[agrarius] questbook parse fail', file, e.message); }
   }
@@ -259,7 +266,12 @@ function loadFromDir(dir) {
 }
 
 async function sh(node, ct, cmd) {
-  const { stdout } = await execFileAsync('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', node,
+  // Hardening: node + ct originate from server env (AGR_PVE_HOST / AGR_QUEST_CT),
+  // never from HTTP input. Validate defensively so a misconfigured env can never
+  // inject into the remote shell string that bash -lc evaluates on the PVE host.
+  if (!/^[A-Za-z0-9._@-]+$/.test(String(node || ''))) throw new Error('invalid AGR_PVE_HOST');
+  if (!/^[0-9]+$/.test(String(ct || ''))) throw new Error('invalid AGR_QUEST_CT (must be numeric)');
+  const { stdout } = await execFileAsync('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', String(node),
     `pct exec ${ct} -- bash -lc ${JSON.stringify(cmd)}`], { maxBuffer: 20 * 1024 * 1024 });
   return stdout;
 }

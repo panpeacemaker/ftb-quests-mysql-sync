@@ -26,7 +26,11 @@ const state = {
 };
 
 function $id(id) { return document.getElementById(id); }
-function apiFetch(url, opts) { return fetch(url, Object.assign({ credentials: 'include' }, opts || {})); }
+function apiFetch(url, opts) {
+  const o = Object.assign({ credentials: 'include' }, opts || {});
+  o.headers = Object.assign({ 'X-Requested-With': 'agrarius-admin' }, (opts && opts.headers) || {});
+  return fetch(url, o);
+}
 function clearChildren(el) { while (el.firstChild) el.removeChild(el.firstChild); }
 function debounce(fn, delay) { let t = null; return function () { const args = arguments; clearTimeout(t); t = setTimeout(() => fn.apply(this, args), delay); }; }
 

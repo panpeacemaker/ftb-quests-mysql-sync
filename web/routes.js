@@ -38,6 +38,14 @@ async function requireWotAgrarius(req, res) {
   }
 }
 
+function requireCsrfHeader(req, res) {
+  if (req.get('x-requested-with') !== 'agrarius-admin') {
+    res.status(403).json({ error: 'CSRF check failed' });
+    return false;
+  }
+  return true;
+}
+
 router.post('/api/agrarius/login', async (req, res) => {
   try {
     const r = await axios.post(WOT_LOGIN, req.body || {}, {
@@ -125,6 +133,7 @@ function resetFlags(resetKind, includeRanks) {
 }
 
 router.post('/api/agrarius/reset', async (req, res) => {
+  if (!requireCsrfHeader(req, res)) return;
   const who = await requireWotAgrarius(req, res);
   if (!who) return;
   const { scope, targetId, mode, chapterId, questId, includeRanks, immediate } = req.body || {};
