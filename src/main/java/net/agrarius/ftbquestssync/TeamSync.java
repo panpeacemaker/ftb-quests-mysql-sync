@@ -361,7 +361,7 @@ public final class TeamSync {
         String name = readName(team);
         String color = readColor(team);
         UUID owner = team.getOwner();
-        return MySQLBackend.getInstance().upsertTeamInfoFuture(team.getId(), type, name, owner, color);
+        return MySQLBackend.getInstance().upsertTeamInfoNoOwnerFuture(team.getId(), type, name, owner, color);
     }
 
     private void persistTeam(Team team, boolean async) {
@@ -370,8 +370,8 @@ public final class TeamSync {
         String name = readName(team);
         String color = readColor(team);
         UUID owner = team.getOwner();
-        if (async) MySQLBackend.getInstance().upsertTeamInfoAsync(team.getId(), type, name, owner, color);
-        else MySQLBackend.getInstance().upsertTeamInfo(team.getId(), type, name, owner, color);
+        if (async) MySQLBackend.getInstance().upsertTeamInfoNoOwnerAsync(team.getId(), type, name, owner, color);
+        else MySQLBackend.getInstance().upsertTeamInfoNoOwner(team.getId(), type, name, owner, color);
     }
 
     private static String teamType(Team team) {

@@ -422,8 +422,23 @@ public class RedisSync {
             final CompoundTag finalFresh = fresh;
             final boolean finalAdvancedShopCycle = advancedShopCycle;
             final int finalForcedShopResets = forcedShopResets;
+            // Push to online members when there is ANY meaningful delta. Previously this
+            // only fired for sendFullTeamData / shop cycles, so a plain task completion on
+            // the peer server never reached this server's clients until an unrelated DB
+            // write happened to ride along (issue #15: "needs an external update"). Detect
+            // a completion/progress delta vs the pre-merge local state and push then too.
+            boolean hasCompletionOrProgressDelta = false;
+            if (finalLocalBeforeMerge != null) {
+                CompoundTag beforeC = finalLocalBeforeMerge.getCompound("completed");
+                CompoundTag afterC = finalDeltaSnapshot.getCompound("completed");
+                CompoundTag beforeP = finalLocalBeforeMerge.getCompound("task_progress");
+                CompoundTag afterP = finalDeltaSnapshot.getCompound("task_progress");
+                hasCompletionOrProgressDelta = !nbtEquals(beforeC, afterC) || !nbtEquals(beforeP, afterP);
+            }
+            final boolean finalHasDelta = hasCompletionOrProgressDelta;
             FTBTeamsAPI.api().getManager().getTeamByID(teamId).ifPresent(team -> {
-                if (!Config.sendFullTeamData && !finalAdvancedShopCycle && finalForcedShopResets == 0) return;
+                if (!Config.sendFullTeamData && !finalAdvancedShopCycle && finalForcedShopResets == 0
+                        && !finalHasDelta) return;
                 Collection<ServerPlayer> members = team.getOnlineMembers();
                 if (!members.isEmpty()) {
                     ArrayList<ServerPlayer> memberList = new ArrayList<>(members);

@@ -30,7 +30,7 @@ public class FTBQuestsSync {
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {
-        LOGGER.info("FTB Quests Sync 1.1.2 booting");
+        LOGGER.info("FTB Quests Sync 1.1.3 booting");
         Config.reload();
         MySQLBackend.getInstance().initialize();
         if (Config.syncTeams) {
@@ -55,12 +55,34 @@ public class FTBQuestsSync {
         RankSoloProgress.init();
         ChunkSeeder.runIfConfigured(event.getServer());
         ChunkMaterializer.materializeAllLoaded(event.getServer());
-        LOGGER.info("FTB Quests Sync 1.1.2 ready (mysqlAvailable={}, redisEnabled={}, teamsRedisEnabled={}, serverId={})",
+        LOGGER.info("FTB Quests Sync 1.1.3 ready (mysqlAvailable={}, redisEnabled={}, teamsRedisEnabled={}, serverId={})",
                 MySQLBackend.getInstance().isAvailable(),
                 RedisSync.getInstance().isEnabled(),
                 TeamSync.getInstance().isEnabled(),
                 RedisSync.getInstance().getServerId());
         serverStarted = true;
+        backfillMissingPlayerNames(event.getServer());
+    }
+
+    private void backfillMissingPlayerNames(net.minecraft.server.MinecraftServer server) {
+        if (!MySQLBackend.getInstance().isAvailable()) return;
+        try {
+            java.util.List<java.util.UUID> missing = MySQLBackend.getInstance().selectMembershipUuidsMissingName();
+            if (missing.isEmpty()) return;
+            java.util.Map<java.util.UUID, String> resolved = new java.util.HashMap<>();
+            for (java.util.UUID uuid : missing) {
+                server.getProfileCache()
+                        .get(uuid)
+                        .map(com.mojang.authlib.GameProfile::getName)
+                        .filter(n -> n != null && !n.isBlank())
+                        .ifPresent(name -> resolved.put(uuid, name));
+            }
+            LOGGER.info("Player-name backfill: {} membership uuid(s) missing a name, {} resolved from UserCache",
+                    missing.size(), resolved.size());
+            MySQLBackend.getInstance().backfillPlayerNamesAsync(resolved);
+        } catch (Exception e) {
+            LOGGER.warn("Player-name backfill failed", e);
+        }
     }
 
     @SubscribeEvent
