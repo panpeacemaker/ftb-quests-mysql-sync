@@ -14,12 +14,15 @@ import dev.ftb.mods.ftbteams.api.event.TeamCreatedEvent;
 import dev.ftb.mods.ftbteams.api.event.TeamEvent;
 import dev.ftb.mods.ftbteams.api.property.TeamProperties;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.TickTask;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraftforge.server.ServerLifecycleHooks;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPubSub;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -52,9 +55,11 @@ public final class TeamSync {
 
     private static final TeamSync INSTANCE = new TeamSync();
     private static final String CHANNEL = "ftbquests:team:membership";
+    private static final long DISCONNECTING_TTL_MS = 10_000L;
 
     private final ConcurrentHashMap<String, Long> recentEmits = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<UUID, String[]> lastSyncedProps = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> disconnecting = new ConcurrentHashMap<>();
 
     private JedisPool pool;
     private ExecutorService subscriberExec;
@@ -170,19 +175,7 @@ public final class TeamSync {
         UUID partyTeamId = partyTeam.getId();
         UUID playerId = ev.getPlayer().getUUID();
         if (TeamMutationGuard.isTeamSuppressed(partyTeamId)) return;
-        TeamManager mgr = FTBTeamsAPI.api().getManager();
-        Team playerTeam = mgr.getPlayerTeamForPlayerID(playerId).orElse(null);
-        UUID targetTeamId = playerTeam == null ? playerId : playerTeam.getId();
-        String rank = playerTeam == null ? "OWNER" : rankName(playerTeam, playerId);
-        MySQLBackend.getInstance().upsertMembershipFuture(playerId, targetTeamId, rank)
-                .whenComplete((v, e) -> {
-                    if (e != null) {
-                        FTBQuestsSync.LOGGER.error("kick solo-persist failed player={}", playerId, e);
-                        return;
-                    }
-                    migrateMemberQuestStateToSolo(partyTeamId, playerId);
-                    publish("member_kick", partyTeamId, playerId);
-                });
+        scheduleConfirmedPartyExit(ev.getPlayer(), playerId, partyTeamId);
     }
 
     private void onPlayerChanged(PlayerChangedTeamEvent ev) {
@@ -203,15 +196,7 @@ public final class TeamSync {
         boolean realPartyExit = ownSolo && ev.getPreviousTeam().isPresent() && ev.getPreviousTeam().get().isPartyTeam();
         if (realPartyExit) {
             UUID previousPartyId = ev.getPreviousTeam().get().getId();
-            MySQLBackend.getInstance().upsertMembershipFuture(playerId, team.getId(), rankName(team, playerId))
-                    .whenComplete((v, e) -> {
-                        if (e != null) {
-                            FTBQuestsSync.LOGGER.error("kick solo-persist failed player={}", playerId, e);
-                            return;
-                        }
-                        migrateMemberQuestStateToSolo(previousPartyId, playerId);
-                        TeamSync.getInstance().publishMemberKick(previousPartyId, playerId);
-                    });
+            scheduleConfirmedPartyExit(null, playerId, previousPartyId);
             return;
         }
         if (ownSolo) {
@@ -221,6 +206,62 @@ public final class TeamSync {
             persistMembership(playerId, team);
         }
         publish("changed", team.getId(), playerId);
+    }
+
+    public void markPlayerDisconnecting(UUID id) {
+        if (id == null) return;
+        disconnecting.put(id, System.currentTimeMillis() + DISCONNECTING_TTL_MS);
+    }
+
+    private boolean isPlayerDisconnecting(UUID id) {
+        long now = System.currentTimeMillis();
+        disconnecting.entrySet().removeIf(entry -> entry.getValue() < now);
+        Long expiresAt = disconnecting.get(id);
+        return expiresAt != null && expiresAt >= now;
+    }
+
+    private void scheduleConfirmedPartyExit(ServerPlayer player, UUID playerId, UUID previousPartyId) {
+        MinecraftServer srv = ServerLifecycleHooks.getCurrentServer();
+        if (srv == null) {
+            FTBQuestsSync.LOGGER.warn("Party exit confirm skipped: server unavailable player={} prevParty={}", playerId, previousPartyId);
+            return;
+        }
+        srv.tell(new TickTask(srv.getTickCount() + 5, () -> confirmPartyExit(player, playerId, previousPartyId)));
+    }
+
+    private void confirmPartyExit(ServerPlayer originalPlayer, UUID playerId, UUID previousPartyId) {
+        MinecraftServer srv = ServerLifecycleHooks.getCurrentServer();
+        if (srv == null) {
+            FTBQuestsSync.LOGGER.warn("Party exit confirm skipped: server unavailable player={} prevParty={}", playerId, previousPartyId);
+            return;
+        }
+
+        ServerPlayer currentPlayer = srv.getPlayerList().getPlayer(playerId);
+        if (currentPlayer == null || currentPlayer.connection == null || currentPlayer.isRemoved() || isPlayerDisconnecting(playerId)) {
+            FTBQuestsSync.LOGGER.info("Suppressed transient party exit (server switch/disconnect): player={} prevParty={}", playerId, previousPartyId);
+            return;
+        }
+
+        TeamManager mgr = FTBTeamsAPI.api().getManager();
+        Team currentTeam = mgr.getTeamForPlayer(currentPlayer)
+                .or(() -> mgr.getPlayerTeamForPlayerID(playerId))
+                .orElse(null);
+        if (currentTeam == null || previousPartyId.equals(currentTeam.getId())
+                || !(currentTeam.isPlayerTeam() && currentTeam.getId().equals(playerId))) {
+            FTBQuestsSync.LOGGER.info("Suppressed transient party exit (server switch/disconnect): player={} prevParty={}", playerId, previousPartyId);
+            return;
+        }
+
+        FTBQuestsSync.LOGGER.info("Confirmed party leave: player={} prevParty={}", playerId, previousPartyId);
+        MySQLBackend.getInstance().upsertMembershipFuture(playerId, playerId, "OWNER")
+                .whenComplete((v, e) -> {
+                    if (e != null) {
+                        FTBQuestsSync.LOGGER.error("kick solo-persist failed player={}", playerId, e);
+                        return;
+                    }
+                    migrateMemberQuestStateToSolo(previousPartyId, playerId);
+                    publish("member_kick", previousPartyId, playerId);
+                });
     }
 
     private void onOwnershipTransferred(PlayerTransferredTeamOwnershipEvent ev) {

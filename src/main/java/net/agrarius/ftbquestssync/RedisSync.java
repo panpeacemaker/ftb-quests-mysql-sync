@@ -388,6 +388,7 @@ public class RedisSync {
                     } catch (Exception e) {
                         FTBQuestsSync.LOGGER.debug("Could not mark merged team {} dirty", teamId, e);
                     }
+                    existing.markDirty();
                 }
             } else if (existing != null) {
                 merged = fresh;
