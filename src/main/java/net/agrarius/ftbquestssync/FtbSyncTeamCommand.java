@@ -113,11 +113,8 @@ public final class FtbSyncTeamCommand {
         MySQLBackend.TeamMembershipRow current = db.selectMembership(targetId).orElse(null);
         if (current != null && ctx.team().getId().equals(current.teamId())) throw ALREADY_MEMBER.create();
 
-        TeamSync.getInstance().persistTeamNow(ctx.team());
-        db.upsertMembership(targetId, ctx.team().getId(), "MEMBER");
-        TeamSync.getInstance().publishMemberAdd(ctx.team().getId(), targetId);
-        ctx.server().execute(() -> applyMemberAddLocal(ctx.server(), ctx.team().getId(), targetId, "MEMBER"));
-        source.sendSuccess(() -> Component.literal("FTB Sync invite/add queued for " + target.getName()), false);
+        TeamSync.getInstance().queueInvite(ctx.player(), (PartyTeam) ctx.team(), target);
+        source.sendSuccess(() -> Component.literal("FTB Sync invite queued for " + target.getName()), false);
         return Command.SINGLE_SUCCESS;
     }
 
@@ -182,7 +179,7 @@ public final class FtbSyncTeamCommand {
         return Command.SINGLE_SUCCESS;
     }
 
-    static void applyMemberAddLocal(MinecraftServer server, UUID teamId, UUID playerId, String rank) {
+    public static void applyMemberAddLocal(MinecraftServer server, UUID teamId, UUID playerId, String rank) {
         TeamManager mgr = FTBTeamsAPI.api().getManager();
         if (!TeamMaterializer.ensureTeamMaterialized(teamId)) return;
         Team team = mgr.getTeamByID(teamId).orElse(null);
@@ -198,7 +195,7 @@ public final class FtbSyncTeamCommand {
         if (player != null) TeamSync.getInstance().forceFullSyncToPlayer(player, teamId);
     }
 
-    static void applyMemberKickLocal(MinecraftServer server, UUID teamId, UUID playerId,
+    public static void applyMemberKickLocal(MinecraftServer server, UUID teamId, UUID playerId,
                                      MySQLBackend.TeamMaterializationRow row) {
         TeamManager mgr = FTBTeamsAPI.api().getManager();
         Team oldTeam = mgr.getTeamByID(teamId).orElse(null);
@@ -245,7 +242,7 @@ public final class FtbSyncTeamCommand {
         }
     }
 
-    static void applyOwnerTransferLocal(MinecraftServer server, CommandSourceStack source, UUID teamId,
+    public static void applyOwnerTransferLocal(MinecraftServer server, CommandSourceStack source, UUID teamId,
                                         GameProfile newOwner, List<MySQLBackend.TeamMemberRow> members) {
         TeamManager mgr = FTBTeamsAPI.api().getManager();
         if (!TeamMaterializer.ensureTeamMaterialized(teamId)) return;
