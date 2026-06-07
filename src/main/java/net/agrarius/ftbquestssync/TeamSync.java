@@ -154,6 +154,7 @@ public final class TeamSync {
         UUID playerId = ev.getPlayer().getUUID();
         if (TeamMutationGuard.isTeamSuppressed(team.getId())) return;
         persistTeam(team);
+        MembershipCache.put(playerId, team.getId());
         MySQLBackend.getInstance().upsertMembershipFuture(playerId, team.getId(), rankName(team, playerId))
                 .whenComplete((v, e) -> {
                     if (e != null) {
@@ -174,6 +175,7 @@ public final class TeamSync {
         Team playerTeam = mgr.getPlayerTeamForPlayerID(playerId).orElse(null);
         UUID targetTeamId = playerTeam == null ? playerId : playerTeam.getId();
         String rank = playerTeam == null ? "OWNER" : rankName(playerTeam, playerId);
+        MembershipCache.put(playerId, targetTeamId);
         MySQLBackend.getInstance().upsertMembershipFuture(playerId, targetTeamId, rank)
                 .whenComplete((v, e) -> {
                     if (e != null) {
@@ -203,6 +205,7 @@ public final class TeamSync {
         boolean realPartyExit = ownSolo && ev.getPreviousTeam().isPresent() && ev.getPreviousTeam().get().isPartyTeam();
         if (realPartyExit) {
             UUID previousPartyId = ev.getPreviousTeam().get().getId();
+            MembershipCache.put(playerId, team.getId());
             MySQLBackend.getInstance().upsertMembershipFuture(playerId, team.getId(), rankName(team, playerId))
                     .whenComplete((v, e) -> {
                         if (e != null) {
@@ -215,6 +218,7 @@ public final class TeamSync {
             return;
         }
         if (ownSolo) {
+            MembershipCache.put(playerId, team.getId());
             MySQLBackend.getInstance().upsertOwnPlayerMembershipIfAbsentOrSelfAsync(
                     playerId, rankName(team, playerId));
         } else {
@@ -401,6 +405,7 @@ public final class TeamSync {
 
     private void persistMembership(UUID playerId, Team team) {
         if (team == null) return;
+        MembershipCache.put(playerId, team.getId());
         MySQLBackend.getInstance().upsertMembershipAsync(playerId, team.getId(), rankName(team, playerId));
     }
 

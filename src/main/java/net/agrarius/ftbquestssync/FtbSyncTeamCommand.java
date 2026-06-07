@@ -91,7 +91,6 @@ public final class FtbSyncTeamCommand {
             dev.ftb.mods.ftbchunks.api.ChunkTeamData data =
                     dev.ftb.mods.ftbchunks.api.FTBChunksAPI.api().getManager().getOrCreateData(team);
             data.setExtraForceLoadChunks(bonusForceLoad);
-            ChunkLimitPatcher.ensureCapacity(data, 0, bonusForceLoad);
             source.sendSuccess(() -> Component.literal(
                     "Set bonus force-load chunks for " + targetName + " (team " + team.getId() + ") to " + bonusForceLoad), true);
             FTBQuestsSync.LOGGER.info("Chunk bonus set via command: player={} team={} bonusForceLoad={}",
