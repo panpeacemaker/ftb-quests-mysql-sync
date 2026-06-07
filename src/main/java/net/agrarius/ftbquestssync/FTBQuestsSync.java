@@ -30,7 +30,7 @@ public class FTBQuestsSync {
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {
-        LOGGER.info("FTB Quests Sync 1.1.3 booting");
+        LOGGER.info("FTB Quests Sync 1.1.4 booting");
         Config.reload();
         MySQLBackend.getInstance().initialize();
         if (Config.syncTeams) {
@@ -55,7 +55,7 @@ public class FTBQuestsSync {
         RankSoloProgress.init();
         ChunkSeeder.runIfConfigured(event.getServer());
         ChunkMaterializer.materializeAllLoaded(event.getServer());
-        LOGGER.info("FTB Quests Sync 1.1.3 ready (mysqlAvailable={}, redisEnabled={}, teamsRedisEnabled={}, serverId={})",
+        LOGGER.info("FTB Quests Sync 1.1.4 ready (mysqlAvailable={}, redisEnabled={}, teamsRedisEnabled={}, serverId={})",
                 MySQLBackend.getInstance().isAvailable(),
                 RedisSync.getInstance().isEnabled(),
                 TeamSync.getInstance().isEnabled(),
@@ -94,6 +94,11 @@ public class FTBQuestsSync {
     public void onPlayerLogin(PlayerEvent.PlayerLoggedInEvent event) {
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
         MySQLBackend.getInstance().upsertPlayerNameAsync(player.getUUID(), player.getGameProfile().getName());
+        java.util.UUID loginUuid = player.getUUID();
+        MySQLBackend.getInstance().loadTeamMaterializationAsync(loginUuid).whenComplete((row, err) -> {
+            if (err != null || row == null || row.membership() == null) return;
+            MembershipCache.put(loginUuid, row.membership().teamId());
+        });
         // When syncTeams=true, TeamSync.reconcileOnLogin fires via PlayerLoggedInAfterTeamEvent
         // AFTER FTB Teams has materialized the correct effective team. Running both produces a
         // double async reload race: two DB loads race to win; loser's SyncTeamDataMessage

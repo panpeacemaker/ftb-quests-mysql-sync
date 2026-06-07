@@ -57,6 +57,7 @@ public final class TeamMaterializer {
         UUID playerUuid = player.getUUID();
         MySQLBackend.TeamMembershipRow membership = row.membership();
         UUID dbTeamId = membership.teamId();
+        MembershipCache.put(playerUuid, dbTeamId);
         TeamManager mgr = FTBTeamsAPI.api().getManager();
         Team existing = mgr.getTeamByID(dbTeamId).orElse(null);
 
@@ -80,6 +81,12 @@ public final class TeamMaterializer {
                 }
                 TeamSync.getInstance().forceFullSyncToPlayer(player, playerUuid);
             }
+            // Player converged back to their own solo team after being detached from a
+            // stale party. Reload their solo team's quest data and re-push per-player
+            // rank/QoL progress so a team change can't leave them with wiped solo
+            // progress (#7/#17).
+            RedisSync.getInstance().forceReloadAndPushTo(playerUuid, player);
+            ChunkMaterializer.materializeOnLogin(player);
             return;
         }
 
