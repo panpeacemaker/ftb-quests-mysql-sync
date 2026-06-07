@@ -117,8 +117,11 @@ public abstract class RewardClaimMixin {
         }
 
         // TEAM scope by default; PLAYER only for solo chapters (ranks/QoL) not overridden by teamClaimChapterIds.
+        // Resolve the TEAM dedup key from the canonical DB membership cache (fallback: local teamId)
+        // so two servers with a momentarily split local team still key the claim on the same team (#10).
         String scopeType = (soloScopedReward && Config.teamRewardsDedupGlobal) ? "PLAYER" : "TEAM";
-        UUID claimUuid = "TEAM".equals(scopeType) ? teamId : player.getUUID();
+        UUID canonicalTeamId = net.agrarius.ftbquestssync.MembershipCache.resolveTeam(player.getUUID(), teamId);
+        UUID claimUuid = "TEAM".equals(scopeType) ? canonicalTeamId : player.getUUID();
         long rewardId = reward.id;
         long cycle = (teamClaimOverride || teamShared) ? ((TeamData)(Object)this).getCompletionCount(reward.getQuest()) : 0L;
         long[] questRewardIds = (teamClaimOverride || teamShared) ? ShopRepeatableSync.rewardIds(reward.getQuest()) : new long[]{rewardId};
