@@ -184,6 +184,12 @@ public class MySQLBackend {
             + "ON DUPLICATE KEY UPDATE team_type=VALUES(team_type), team_name=VALUES(team_name), "
             + "owner_uuid=VALUES(owner_uuid), team_color=VALUES(team_color), deleted=0, updated_by_server=VALUES(updated_by_server)";
 
+    private static final String SQL_UPSERT_TEAM_INFO_NO_OWNER =
+            "INSERT INTO ftbquests_team_info (team_id, team_type, team_name, owner_uuid, team_color, deleted, updated_by_server) "
+            + "VALUES (?, ?, ?, ?, ?, 0, ?) "
+            + "ON DUPLICATE KEY UPDATE team_type=VALUES(team_type), team_name=VALUES(team_name), "
+            + "team_color=VALUES(team_color), deleted=0, updated_by_server=VALUES(updated_by_server)";
+
     private static final String SQL_MARK_TEAM_DELETED =
             "UPDATE ftbquests_team_info SET deleted=1, updated_by_server=? WHERE team_id=?";
 
@@ -1143,6 +1149,55 @@ public class MySQLBackend {
         }
     }
 
+    public void upsertTeamInfoNoOwner(UUID teamId, String type, String name, UUID owner, String color) {
+        if (!isAvailable()) return;
+        try {
+            upsertTeamInfoNoOwnerOrThrow(teamId, type, name, owner, color);
+        } catch (Exception e) {
+            FTBQuestsSync.LOGGER.error("upsertTeamInfoNoOwner failed for {}", teamId, e);
+        }
+    }
+
+    private void upsertTeamInfoNoOwnerOrThrow(UUID teamId, String type, String name, UUID owner, String color) throws Exception {
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(SQL_UPSERT_TEAM_INFO_NO_OWNER)) {
+            ps.setString(1, teamId.toString());
+            ps.setString(2, type);
+            ps.setString(3, name);
+            ps.setString(4, owner == null ? null : owner.toString());
+            ps.setString(5, color);
+            ps.setString(6, RedisSync.getInstance().getServerId());
+            int rows = ps.executeUpdate();
+            FTBQuestsSync.LOGGER.info("Team info upsert (no-owner): id={} type={} name={} color={} rows={}",
+                    teamId, type, name, color, rows);
+        }
+    }
+
+    public void upsertTeamInfoNoOwnerAsync(UUID teamId, String type, String name, UUID owner, String color) {
+        if (!isAvailable()) return;
+        try {
+            CompletableFuture.runAsync(() -> upsertTeamInfoNoOwner(teamId, type, name, owner, color), dbExecutor);
+        } catch (Exception e) {
+            FTBQuestsSync.LOGGER.warn("DB queue full; cannot upsert team info {}", teamId, e);
+        }
+    }
+
+    public CompletableFuture<Void> upsertTeamInfoNoOwnerFuture(UUID teamId, String type, String name, UUID owner, String color) {
+        if (!isAvailable()) return CompletableFuture.failedFuture(new IllegalStateException("MySQL unavailable"));
+        try {
+            return CompletableFuture.runAsync(() -> {
+                try {
+                    upsertTeamInfoNoOwnerOrThrow(teamId, type, name, owner, color);
+                } catch (Exception e) {
+                    throw new CompletionException(e);
+                }
+            }, dbExecutor);
+        } catch (Exception e) {
+            FTBQuestsSync.LOGGER.warn("DB queue full; cannot upsert team info {}", teamId, e);
+            return CompletableFuture.failedFuture(e);
+        }
+    }
+
     public CompletableFuture<Void> upsertTeamInfoFuture(UUID teamId, String type, String name, UUID owner, String color) {
         if (!isAvailable()) return CompletableFuture.failedFuture(new IllegalStateException("MySQL unavailable"));
         try {
@@ -1270,6 +1325,45 @@ public class MySQLBackend {
             CompletableFuture.runAsync(() -> upsertPlayerName(playerUuid, playerName), dbExecutor);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("DB queue full; cannot upsert player name player={}", playerUuid, e);
+        }
+    }
+
+    public List<UUID> selectMembershipUuidsMissingName() {
+        if (!isAvailable()) return List.of();
+        String sql = "SELECT m.player_uuid FROM ftbquests_team_membership m "
+                + "LEFT JOIN ftbquests_player_names n ON n.player_uuid = m.player_uuid "
+                + "WHERE n.player_uuid IS NULL OR n.player_name IS NULL OR n.player_name = ''";
+        List<UUID> out = new ArrayList<>();
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                try {
+                    out.add(UUID.fromString(rs.getString(1)));
+                } catch (IllegalArgumentException ignored) {
+                }
+            }
+        } catch (Exception e) {
+            FTBQuestsSync.LOGGER.error("selectMembershipUuidsMissingName failed", e);
+        }
+        return out;
+    }
+
+    public void backfillPlayerNamesAsync(Map<UUID, String> resolved) {
+        if (!isAvailable() || resolved == null || resolved.isEmpty()) return;
+        Map<UUID, String> copy = new HashMap<>(resolved);
+        try {
+            CompletableFuture.runAsync(() -> {
+                int n = 0;
+                for (Map.Entry<UUID, String> e : copy.entrySet()) {
+                    if (e.getValue() == null || e.getValue().isBlank()) continue;
+                    upsertPlayerName(e.getKey(), e.getValue());
+                    n++;
+                }
+                FTBQuestsSync.LOGGER.info("Player-name backfill complete: {} name(s) written", n);
+            }, dbExecutor);
+        } catch (Exception e) {
+            FTBQuestsSync.LOGGER.warn("DB queue full; player-name backfill skipped", e);
         }
     }
 
