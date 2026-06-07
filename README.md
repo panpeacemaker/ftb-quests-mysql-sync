@@ -190,7 +190,7 @@ For `agr2`, keep the same config but change `serverId = "agr2"`.
 Output:
 
 ```text
-build/libs/ftb-quests-mysql-sync-1.0.3.jar
+build/libs/ftb-quests-mysql-sync-1.1.2.jar
 ```
 
 ## Deployment checklist

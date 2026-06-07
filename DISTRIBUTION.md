@@ -1,4 +1,4 @@
-# Distribution notes — ftb-quests-mysql-sync 1.0.3
+# Distribution notes — ftb-quests-mysql-sync 1.1.2
 
 This is the handoff document for the admin / AT / CP team. It describes exactly what is being shared, how to build it, how to deploy it, what it currently does on Agrarius, and what is intentionally not promised.
 
@@ -24,7 +24,7 @@ cd ftb-quests-mysql-sync
 Output:
 
 ```text
-build/libs/ftb-quests-mysql-sync-1.0.3.jar
+build/libs/ftb-quests-mysql-sync-1.1.2.jar
 ```
 
 ## Deployment shape
