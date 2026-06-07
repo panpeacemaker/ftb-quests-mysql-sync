@@ -9,18 +9,19 @@ This repository is intentionally scoped to the mod project only. Runtime secrets
 | Area | Status |
 |---|---|
 | Minecraft/Forge target | Forge 1.20.1 server-side mod |
-| Build command | `./gradlew clean build` |
-| Output JAR | `build/libs/ftb-quests-mysql-sync-1.0.4.jar` |
+| Current version | `1.1.8` |
+| Build command | `./gradlew clean reobfShadowJar` |
+| Output JAR | `build/libs/ftb-quests-mysql-sync-1.1.8.jar` |
 | Deployment model | same JAR on `agr1` and `agr2` |
 | Canonical storage | MySQL/MariaDB |
 | Live invalidation | Redis pub/sub |
 | Shared quests | remain team-shared |
 | Rank/shop chapters | solo per-player via policy config |
 | Reward protection | DB dedupe for shared and one-shot rewards |
-| Shop/rank claim fix | repeatable solo rewards bypass permanent DB reward-id dedupe; stale DB progress is injected per-player on login |
-| Login delay | 5s delay before SyncTeamDataMessage to avoid client-side race conditions (freeze fix) |
-| markDirty debounce | 3s cooldown between async MySQL saves to prevent server tick lag during login bursts |
-| FTB Teams GUI sync | forced full team sync after login/materialization to avoid missing client team data |
+| FTB Teams sync | party membership, owner, live color/name across servers (`syncTeams`, default off) |
+| FTB Chunks sync | claimed + force-loaded chunks per team (`syncChunks`, default off) |
+| Cross-server team mgmt | pending invites (consent), presence/online-dot, owner/officer actions (1.1.8) |
+| Companion web viewer | read-only questbook viewer + admin reset console in `web/` (see `web/README.md`) |
 | Server identity | explicit config, JVM arg, legacy key, or `luckperms.server` fallback |
 
 ## Problem this solves

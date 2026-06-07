@@ -141,12 +141,14 @@ JAVA_HOME=/usr/lib/jvm/java-17-openjdk ./gradlew clean reobfShadowJar
 - [ ] `build.gradle` version == `FTBQuestsSync.java` version log.
 - [ ] No secrets / private IPs in diff.
 
-## Known Bugs (as of 1.0.32 — NOT fixed)
+## Known Bugs (as of 1.1.8)
 
-- **Cross-server invite** (`/ftbsync team invite` for a player on the other backend): fails / player not added. Root cause investigated: invite resolution + propagation; native FTB invite is NOT hooked (accept-handshake is same-server only).
-- **Kick while target ONLINE on peer**: player stays in team with perms until relog. Root cause: publish-before-commit race + peer handler not removing the live online player reliably. 1.0.32 attempted a fix (publish-after-commit + negative-edge kick) but in-game test still FAILED.
-- Working: party membership sync at login, team color sync (live), chunk sync, quest sync.
-- See git history / Oracle design notes; underlying suspect includes proxy UUID stability and FTB client team-data caching until relog.
+- 1.1.8 reworked cross-server team management. The legacy 1.0.32 direct-invite/online-kick race is superseded by **consent-based pending invites** (`ftbquests_team_invites`, accept via `/ftbteams party join`). #20 (blank names), #21 (presence/online-dot), #22 (owner/officer actions cross-server) were addressed and validated in-game (testers confirmed #20 names + #22 owner-actions; #21 presence added via `PresenceSync` heartbeat + Redis TTL).
+- **Deferred / still open**:
+  - #10 shop-cycle canonical-DB edge (config currently correct: single canonical server). Not a live exploit; `repeatableSoloChapterIds` is empty on both backends.
+  - #16 QoL automation — backlog, not started.
+- Working: party membership sync at login, team color/name live sync, chunk sync, quest sync, pending invites, presence, owner/officer actions.
+- Hard dependency: stable per-player UUIDs from the proxy (Velocity modern forwarding). Offline/cracked UUID breaks all per-player sync.
 
 ## Version History
 
@@ -159,3 +161,10 @@ JAVA_HOME=/usr/lib/jvm/java-17-openjdk ./gradlew clean reobfShadowJar
 - `1.0.30` `/ftbsync team invite/kick/transfer` commands.
 - `1.0.31` offline-kick membership convergence fix (getPreviousTeam discriminator).
 - `1.0.32` publish-after-commit + negative-edge kick + UUID resolver — cross-server invite/online-kick STILL broken.
+- `1.0.33` issues #1–#4: fail-closed rank claim, disband/kick migrates quests+reward scopes to solo team, single-owner invariant, claim-color live propagation.
+- `1.1.1` logout force-save crash fix (bridge iface out of mixin pkg, safe cast); Redis reset events `forceReplace=true` replace local quest data instead of merge.
+- `1.1.2` maintenance: stale version string fix, `.gitignore` restore.
+- `1.1.3` cross-server #8/#15/#17; player-name backfill.
+- `1.1.4` root-cause #7/#10/#15 (trailing flush, leave-confirm, team dedup); split-brain mitigation; chunk-bonus command (#16).
+- `1.1.8` consent-based cross-server **pending team invites** (`ftbquests_team_invites`, accept via `/ftbteams party join`); #20 blank-name fix (GameProfileCache prime from `ftbquests_player_names`); #21 presence/online-dot (`PresenceSync` + `PlayerTeamPresenceMixin`, Redis TTL heartbeat); #22 owner/officer actions cross-server (GUI + command mixins, `TeamMutationGuard`).
+- Companion: `web/` read-only quest viewer + admin reset console (`/api/agrarius/*`, WOT auth, CSRF-guarded reset).
