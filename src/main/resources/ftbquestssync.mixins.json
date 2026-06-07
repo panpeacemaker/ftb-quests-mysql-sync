@@ -11,7 +11,11 @@
     "RewardClaimMixin",
     "RewardMixin",
     "RankSoloTeamDataMixin",
-    "TeamDataMixin"
+    "TeamDataMixin",
+    "PlayerGUIOperationMessageMixin",
+    "PartyTeamMutationMixin",
+    "PlayerTeamPresenceMixin",
+    "AbstractTeamInviteMixin"
   ],
   "injectors": {
     "defaultRequire": 0

@@ -5,6 +5,7 @@ import dev.ftb.mods.ftbteams.api.FTBTeamsAPI;
 import dev.ftb.mods.ftbteams.api.Team;
 import dev.ftb.mods.ftbteams.api.TeamManager;
 import dev.ftb.mods.ftbteams.api.TeamRank;
+import dev.ftb.mods.ftbteams.data.PartyTeam;
 import dev.ftb.mods.ftbteams.api.event.PlayerChangedTeamEvent;
 import dev.ftb.mods.ftbteams.api.event.PlayerJoinedPartyTeamEvent;
 import dev.ftb.mods.ftbteams.api.event.PlayerLeftPartyTeamEvent;
@@ -13,13 +14,20 @@ import dev.ftb.mods.ftbteams.api.event.PlayerTransferredTeamOwnershipEvent;
 import dev.ftb.mods.ftbteams.api.event.TeamCreatedEvent;
 import dev.ftb.mods.ftbteams.api.event.TeamEvent;
 import dev.ftb.mods.ftbteams.api.property.TeamProperties;
+import net.minecraft.ChatFormatting;
+import net.minecraft.network.chat.ClickEvent;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.Style;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.TickTask;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraftforge.server.ServerLifecycleHooks;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPubSub;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -52,9 +60,13 @@ public final class TeamSync {
 
     private static final TeamSync INSTANCE = new TeamSync();
     private static final String CHANNEL = "ftbquests:team:membership";
+    private static final long DISCONNECTING_TTL_MS = 10_000L;
 
     private final ConcurrentHashMap<String, Long> recentEmits = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<UUID, String[]> lastSyncedProps = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> disconnecting = new ConcurrentHashMap<>();
+    private final Map<String, Long> explicitKicks = new ConcurrentHashMap<>();
+    private static final long EXPLICIT_KICK_TTL_MS = 30_000L;
 
     private JedisPool pool;
     private ExecutorService subscriberExec;
@@ -145,7 +157,9 @@ public final class TeamSync {
                 .toList();
         MySQLBackend.getInstance().migratePartyToSoloMembers(teamId, memberUuids);
         MySQLBackend.getInstance().markTeamDeletedAsync(teamId);
+        MySQLBackend.getInstance().deleteTeamInvitesForTeamAsync(teamId);
         publish("deleted", teamId);
+        publishInviteCancel(teamId, null);
     }
 
     private void onJoinedParty(PlayerJoinedPartyTeamEvent ev) {
@@ -154,7 +168,7 @@ public final class TeamSync {
         UUID playerId = ev.getPlayer().getUUID();
         if (TeamMutationGuard.isTeamSuppressed(team.getId())) return;
         persistTeam(team);
-        MySQLBackend.getInstance().upsertMembershipFuture(playerId, team.getId(), rankName(team, playerId))
+        MySQLBackend.getInstance().acceptMembershipFuture(playerId, team.getId(), rankName(team, playerId))
                 .whenComplete((v, e) -> {
                     if (e != null) {
                         FTBQuestsSync.LOGGER.error("member add persist failed player={} team={}", playerId, team.getId(), e);
@@ -170,19 +184,7 @@ public final class TeamSync {
         UUID partyTeamId = partyTeam.getId();
         UUID playerId = ev.getPlayer().getUUID();
         if (TeamMutationGuard.isTeamSuppressed(partyTeamId)) return;
-        TeamManager mgr = FTBTeamsAPI.api().getManager();
-        Team playerTeam = mgr.getPlayerTeamForPlayerID(playerId).orElse(null);
-        UUID targetTeamId = playerTeam == null ? playerId : playerTeam.getId();
-        String rank = playerTeam == null ? "OWNER" : rankName(playerTeam, playerId);
-        MySQLBackend.getInstance().upsertMembershipFuture(playerId, targetTeamId, rank)
-                .whenComplete((v, e) -> {
-                    if (e != null) {
-                        FTBQuestsSync.LOGGER.error("kick solo-persist failed player={}", playerId, e);
-                        return;
-                    }
-                    migrateMemberQuestStateToSolo(partyTeamId, playerId);
-                    publish("member_kick", partyTeamId, playerId);
-                });
+        scheduleConfirmedPartyExit(ev.getPlayer(), playerId, partyTeamId);
     }
 
     private void onPlayerChanged(PlayerChangedTeamEvent ev) {
@@ -203,15 +205,7 @@ public final class TeamSync {
         boolean realPartyExit = ownSolo && ev.getPreviousTeam().isPresent() && ev.getPreviousTeam().get().isPartyTeam();
         if (realPartyExit) {
             UUID previousPartyId = ev.getPreviousTeam().get().getId();
-            MySQLBackend.getInstance().upsertMembershipFuture(playerId, team.getId(), rankName(team, playerId))
-                    .whenComplete((v, e) -> {
-                        if (e != null) {
-                            FTBQuestsSync.LOGGER.error("kick solo-persist failed player={}", playerId, e);
-                            return;
-                        }
-                        migrateMemberQuestStateToSolo(previousPartyId, playerId);
-                        TeamSync.getInstance().publishMemberKick(previousPartyId, playerId);
-                    });
+            scheduleConfirmedPartyExit(null, playerId, previousPartyId);
             return;
         }
         if (ownSolo) {
@@ -221,6 +215,76 @@ public final class TeamSync {
             persistMembership(playerId, team);
         }
         publish("changed", team.getId(), playerId);
+    }
+
+    public void markPlayerDisconnecting(UUID id) {
+        if (id == null) return;
+        disconnecting.put(id, System.currentTimeMillis() + DISCONNECTING_TTL_MS);
+    }
+
+    private boolean isPlayerDisconnecting(UUID id) {
+        long now = System.currentTimeMillis();
+        disconnecting.entrySet().removeIf(entry -> entry.getValue() < now);
+        Long expiresAt = disconnecting.get(id);
+        return expiresAt != null && expiresAt >= now;
+    }
+
+    public void markExplicitKick(UUID teamId, UUID playerId) {
+        if (teamId == null || playerId == null) return;
+        explicitKicks.put(teamId + "|" + playerId, System.currentTimeMillis() + EXPLICIT_KICK_TTL_MS);
+    }
+
+    private boolean consumeExplicitKick(UUID teamId, UUID playerId) {
+        long now = System.currentTimeMillis();
+        explicitKicks.entrySet().removeIf(entry -> entry.getValue() < now);
+        return explicitKicks.remove(teamId + "|" + playerId) != null;
+    }
+
+    private void scheduleConfirmedPartyExit(ServerPlayer player, UUID playerId, UUID previousPartyId) {
+        MinecraftServer srv = ServerLifecycleHooks.getCurrentServer();
+        if (srv == null) {
+            FTBQuestsSync.LOGGER.warn("Party exit confirm skipped: server unavailable player={} prevParty={}", playerId, previousPartyId);
+            return;
+        }
+        srv.tell(new TickTask(srv.getTickCount() + 5, () -> confirmPartyExit(player, playerId, previousPartyId)));
+    }
+
+    private void confirmPartyExit(ServerPlayer originalPlayer, UUID playerId, UUID previousPartyId) {
+        MinecraftServer srv = ServerLifecycleHooks.getCurrentServer();
+        if (srv == null) {
+            FTBQuestsSync.LOGGER.warn("Party exit confirm skipped: server unavailable player={} prevParty={}", playerId, previousPartyId);
+            return;
+        }
+
+        boolean explicitKick = consumeExplicitKick(previousPartyId, playerId);
+        ServerPlayer currentPlayer = srv.getPlayerList().getPlayer(playerId);
+        if (!explicitKick && (currentPlayer == null || currentPlayer.connection == null || currentPlayer.isRemoved() || isPlayerDisconnecting(playerId))) {
+            FTBQuestsSync.LOGGER.info("Suppressed transient party exit (server switch/disconnect): player={} prevParty={}", playerId, previousPartyId);
+            return;
+        }
+
+        if (!explicitKick) {
+            TeamManager mgr = FTBTeamsAPI.api().getManager();
+            Team currentTeam = mgr.getTeamForPlayer(currentPlayer)
+                    .or(() -> mgr.getPlayerTeamForPlayerID(playerId))
+                    .orElse(null);
+            if (currentTeam == null || previousPartyId.equals(currentTeam.getId())
+                    || !(currentTeam.isPlayerTeam() && currentTeam.getId().equals(playerId))) {
+                FTBQuestsSync.LOGGER.info("Suppressed transient party exit (server switch/disconnect): player={} prevParty={}", playerId, previousPartyId);
+                return;
+            }
+        }
+
+        FTBQuestsSync.LOGGER.info("Confirmed party leave: player={} prevParty={} explicitKick={}", playerId, previousPartyId, explicitKick);
+        MySQLBackend.getInstance().upsertMembershipFuture(playerId, playerId, "OWNER")
+                .whenComplete((v, e) -> {
+                    if (e != null) {
+                        FTBQuestsSync.LOGGER.error("kick solo-persist failed player={}", playerId, e);
+                        return;
+                    }
+                    migrateMemberQuestStateToSolo(previousPartyId, playerId);
+                    publish("member_kick", previousPartyId, playerId);
+                });
     }
 
     private void onOwnershipTransferred(PlayerTransferredTeamOwnershipEvent ev) {
@@ -284,6 +348,7 @@ public final class TeamSync {
         // team and pushed it alongside the correct one, leaving the client on the
         // wrong team. Only the materializer resolves + pushes the DB team now.
         TeamMaterializer.materializeOnLogin(player);
+        TeamMaterializer.materializePendingInvitesOnLogin(player);
 
         // Fallback only: when the player has NO DB membership row, persist their
         // current local team so a peer can materialize it. Resolve current INSIDE
@@ -361,7 +426,7 @@ public final class TeamSync {
         String name = readName(team);
         String color = readColor(team);
         UUID owner = team.getOwner();
-        return MySQLBackend.getInstance().upsertTeamInfoFuture(team.getId(), type, name, owner, color);
+        return MySQLBackend.getInstance().upsertTeamInfoNoOwnerFuture(team.getId(), type, name, owner, color);
     }
 
     private void persistTeam(Team team, boolean async) {
@@ -370,8 +435,8 @@ public final class TeamSync {
         String name = readName(team);
         String color = readColor(team);
         UUID owner = team.getOwner();
-        if (async) MySQLBackend.getInstance().upsertTeamInfoAsync(team.getId(), type, name, owner, color);
-        else MySQLBackend.getInstance().upsertTeamInfo(team.getId(), type, name, owner, color);
+        if (async) MySQLBackend.getInstance().upsertTeamInfoNoOwnerAsync(team.getId(), type, name, owner, color);
+        else MySQLBackend.getInstance().upsertTeamInfoNoOwner(team.getId(), type, name, owner, color);
     }
 
     private static String teamType(Team team) {
@@ -430,6 +495,55 @@ public final class TeamSync {
 
     public void publishMemberAdd(UUID teamId, UUID playerId) {
         publish("member_add", teamId, playerId);
+    }
+
+    public void publishInvite(UUID teamId, UUID playerId) {
+        publish("invite", teamId, playerId);
+    }
+
+    public void publishInviteCancel(UUID teamId, UUID playerId) {
+        publish("invite_cancel", teamId, playerId);
+    }
+
+    public void syncRankChange(MinecraftServer server, UUID teamId, UUID playerId, String rank) {
+        if (!Config.syncTeams || server == null || teamId == null || playerId == null || rank == null) return;
+        MySQLBackend.getInstance().upsertMembershipFuture(playerId, teamId, rank)
+                .whenComplete((v, e) -> {
+                    if (e != null) {
+                        FTBQuestsSync.LOGGER.error("syncRankChange persist failed player={} team={} rank={}", playerId, teamId, rank, e);
+                        return;
+                    }
+                    publish("member_add", teamId, playerId);
+                });
+    }
+
+    public void queueInvite(ServerPlayer inviter, PartyTeam team, GameProfile target) {
+        if (!Config.syncTeams || inviter == null || team == null || target == null || target.getId() == null) return;
+        UUID teamId = team.getId();
+        UUID targetId = target.getId();
+        UUID inviterId = inviter.getUUID();
+        MySQLBackend db = MySQLBackend.getInstance();
+
+        MySQLBackend.TeamMembershipRow current = db.selectMembership(targetId).orElse(null);
+        if (current != null && !targetId.equals(current.teamId())) {
+            FTBQuestsSync.LOGGER.warn("Invite blocked: target={} already in party team={}", targetId, current.teamId());
+            return;
+        }
+        TeamManager mgr = FTBTeamsAPI.api().getManager();
+        Team localTeam = mgr.getTeamForPlayerID(targetId).orElse(null);
+        if (localTeam != null && localTeam.isPartyTeam() && !localTeam.getId().equals(targetId)) {
+            FTBQuestsSync.LOGGER.warn("Invite blocked: target={} already in local party team={}", targetId, localTeam.getId());
+            return;
+        }
+
+        persistTeamNow(team);
+        db.upsertTeamInvite(teamId, targetId, inviterId);
+        try (TeamMutationGuard.Scope ignored = TeamMutationGuard.suppressTeam(teamId)) {
+            TeamMaterializer.addPlayerToTeamReflective(team, targetId, "INVITED");
+        }
+        TeamMaterializer.markTeamDirtyAndSync(mgr, team);
+        publishInvite(teamId, targetId);
+        FTBQuestsSync.LOGGER.info("Queued cross-server invite: inviter={} team={} target={}", inviterId, teamId, targetId);
     }
 
     public void publishMemberKick(UUID teamId, UUID playerId) {
@@ -518,6 +632,14 @@ public final class TeamSync {
                 handleRemoteOwnerTransfer(teamId);
                 return;
             }
+            if ("invite".equals(reason)) {
+                handleRemoteInvite(teamId, UUID.fromString(playerIdStr));
+                return;
+            }
+            if ("invite_cancel".equals(reason)) {
+                handleRemoteInviteCancel(teamId, playerIdStr);
+                return;
+            }
 
             // If a specific player is mentioned and they are online on this
             // server, reconcile their team membership + quest data immediately.
@@ -600,7 +722,13 @@ public final class TeamSync {
             }
             if (row == null || row.info() == null || row.info().deleted()) return;
             if (!teamId.equals(row.membership().teamId())) return;
-            server.execute(() -> FtbSyncTeamCommand.applyMemberAddLocal(server, teamId, playerId, row.membership().rank()));
+            server.execute(() -> {
+                if (TeamMutationGuard.isTeamSuppressed(teamId)) {
+                    FTBQuestsSync.LOGGER.debug("Remote member_add suppressed: team={} player={} (already mutating)", teamId, playerId);
+                    return;
+                }
+                FtbSyncTeamCommand.applyMemberAddLocal(server, teamId, playerId, row.membership().rank());
+            });
         });
     }
 
@@ -610,7 +738,13 @@ public final class TeamSync {
                 FTBQuestsSync.LOGGER.warn("Remote member_kick DB load failed team={} player={}", teamId, playerId, err);
                 return;
             }
-            server.execute(() -> FtbSyncTeamCommand.applyMemberKickLocal(server, teamId, playerId, row));
+            server.execute(() -> {
+                if (TeamMutationGuard.isTeamSuppressed(teamId)) {
+                    FTBQuestsSync.LOGGER.debug("Remote member_kick suppressed: team={} player={} (already mutating)", teamId, playerId);
+                    return;
+                }
+                FtbSyncTeamCommand.applyMemberKickLocal(server, teamId, playerId, row);
+            });
         });
     }
 
@@ -621,8 +755,80 @@ public final class TeamSync {
                 return;
             }
             if (state == null || state.info() == null || state.info().deleted() || state.info().owner() == null) return;
-            server.execute(() -> FtbSyncTeamCommand.applyOwnerTransferLocal(server, server.createCommandSourceStack(),
-                    teamId, profileFor(server, state.info().owner()), state.members()));
+            server.execute(() -> {
+                if (TeamMutationGuard.isTeamSuppressed(teamId)) {
+                    FTBQuestsSync.LOGGER.debug("Remote owner_transfer suppressed: team={} (already mutating)", teamId);
+                    return;
+                }
+                FtbSyncTeamCommand.applyOwnerTransferLocal(server, server.createCommandSourceStack(),
+                        teamId, profileFor(server, state.info().owner()), state.members());
+            });
+        });
+    }
+
+    private void handleRemoteInvite(UUID teamId, UUID playerId) {
+        java.util.Optional<MySQLBackend.TeamInviteRow> inviteOpt = MySQLBackend.getInstance().selectTeamInvite(teamId, playerId);
+        if (inviteOpt.isEmpty()) {
+            FTBQuestsSync.LOGGER.debug("Remote invite ignored: no DB invite row team={} player={}", teamId, playerId);
+            return;
+        }
+        UUID inviterUuid = inviteOpt.get().inviterUuid();
+        server.execute(() -> {
+            if (TeamMutationGuard.isTeamSuppressed(teamId)) {
+                FTBQuestsSync.LOGGER.debug("Remote invite suppressed: team={} player={} (already mutating)", teamId, playerId);
+                return;
+            }
+            TeamManager mgr = FTBTeamsAPI.api().getManager();
+            Team playerTeam = mgr.getTeamForPlayerID(playerId).orElse(null);
+            if (playerTeam != null && playerTeam.isPartyTeam() && !playerTeam.getId().equals(playerId)) {
+                FTBQuestsSync.LOGGER.debug("Remote invite ignored: player={} already in non-solo party team={}", playerId, playerTeam.getId());
+                return;
+            }
+            if (!TeamMaterializer.ensureTeamMaterialized(teamId)) {
+                FTBQuestsSync.LOGGER.warn("Remote invite failed to materialize team={}", teamId);
+                return;
+            }
+            Team team = mgr.getTeamByID(teamId).orElse(null);
+            if (team == null) return;
+            try (TeamMutationGuard.Scope ignored = TeamMutationGuard.suppressTeam(teamId)) {
+                TeamMaterializer.addPlayerToTeamReflective(team, playerId, "INVITED");
+            }
+            TeamMaterializer.markTeamDirtyAndSync(mgr, team);
+            FTBQuestsSync.LOGGER.info("Remote invite applied: team={} player={}", teamId, playerId);
+            notifyInviteeChat(server, team, playerId, inviterUuid);
+        });
+    }
+
+    private void handleRemoteInviteCancel(UUID teamId, String playerIdStr) {
+        server.execute(() -> {
+            if (TeamMutationGuard.isTeamSuppressed(teamId)) {
+                FTBQuestsSync.LOGGER.debug("Remote invite_cancel suppressed: team={} (already mutating)", teamId);
+                return;
+            }
+            TeamManager mgr = FTBTeamsAPI.api().getManager();
+            Team team = mgr.getTeamByID(teamId).orElse(null);
+            if (team == null) return;
+            try (TeamMutationGuard.Scope ignored = TeamMutationGuard.suppressTeam(teamId)) {
+                if ("-".equals(playerIdStr)) {
+                    java.util.List<UUID> toRemove = new java.util.ArrayList<>();
+                    for (UUID playerId : team.getMembers()) {
+                        if (team.getRankForPlayer(playerId) == TeamRank.INVITED) {
+                            toRemove.add(playerId);
+                        }
+                    }
+                    for (UUID playerId : toRemove) {
+                        TeamMaterializer.removePlayerFromTeamReflective(team, playerId);
+                    }
+                    FTBQuestsSync.LOGGER.info("Remote invite_cancel applied (all invites): team={} removed={}", teamId, toRemove.size());
+                } else {
+                    UUID playerId = UUID.fromString(playerIdStr);
+                    if (team.getRankForPlayer(playerId) == TeamRank.INVITED) {
+                        TeamMaterializer.removePlayerFromTeamReflective(team, playerId);
+                        FTBQuestsSync.LOGGER.info("Remote invite_cancel applied: team={} player={}", teamId, playerId);
+                    }
+                }
+            }
+            TeamMaterializer.markTeamDirtyAndSync(mgr, team);
         });
     }
 
@@ -636,9 +842,36 @@ public final class TeamSync {
         return cached != null ? cached[1] : null;
     }
 
-    private static GameProfile profileFor(MinecraftServer server, UUID playerId) {
+    public static void notifyInviteeChat(MinecraftServer server, Team team, UUID inviteeUuid, UUID inviterUuid) {
+        try {
+            ServerPlayer invitee = server.getPlayerList().getPlayer(inviteeUuid);
+            if (invitee == null) return;
+            String inviterName = inviterUuid != null ? profileFor(server, inviterUuid).getName() : null;
+            if (inviterName == null || inviterName.isBlank()) {
+                inviterName = "A player";
+            }
+            Component inviterNameComponent = Component.literal(inviterName).withStyle(ChatFormatting.YELLOW);
+            invitee.displayClientMessage(Component.translatable("ftbteams.message.invite_sent", inviterNameComponent), false);
+            String shortName = team.getShortName();
+            Component accept = Component.translatable("ftbteams.accept")
+                    .withStyle(Style.EMPTY.withColor(ChatFormatting.GREEN)
+                            .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/ftbteams party join " + shortName)));
+            Component decline = Component.translatable("ftbteams.decline")
+                    .withStyle(Style.EMPTY.withColor(ChatFormatting.RED)
+                            .withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/ftbteams party decline " + shortName)));
+            invitee.displayClientMessage(Component.literal("[").append(accept).append("] [").append(decline).append("]"), false);
+        } catch (Exception e) {
+            FTBQuestsSync.LOGGER.warn("Failed to send invite chat notification to invitee={} for team={}", inviteeUuid, team.getId(), e);
+        }
+    }
+
+    public static GameProfile profileFor(MinecraftServer server, UUID playerId) {
         ServerPlayer player = server.getPlayerList().getPlayer(playerId);
         if (player != null) return player.getGameProfile();
+        String dbName = MySQLBackend.getInstance().selectPlayerNameByUuid(playerId).orElse(null);
+        if (dbName != null && !dbName.isBlank()) {
+            return new GameProfile(playerId, dbName);
+        }
         return new GameProfile(playerId, playerId.toString());
     }
 

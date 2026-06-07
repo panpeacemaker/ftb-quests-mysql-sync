@@ -8,3 +8,4 @@ logs/
 .omo/
 javap-*.txt
 HANDOFF-*.md
+.sisyphus/

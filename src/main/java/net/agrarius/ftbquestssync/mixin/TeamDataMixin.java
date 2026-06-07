@@ -62,6 +62,9 @@ public abstract class TeamDataMixin implements TeamDataAccess {
     @Unique
     private volatile boolean ftbQuestsSync$forceSaveRequested = false;
 
+    @Unique
+    private boolean ftbQuestsSync$trailingFlushScheduled = false;
+
     /**
      * Hook on markDirty — called by FTB Quests on every state change.
      *
@@ -81,12 +84,25 @@ public abstract class TeamDataMixin implements TeamDataAccess {
         boolean force = ftbQuestsSync$forceSaveRequested;
         ftbQuestsSync$forceSaveRequested = false;
 
-        if (!force && now - ftbQuestsSync$lastSaveMs < SAVE_DEBOUNCE_MS) {
+        long elapsed = now - ftbQuestsSync$lastSaveMs;
+        if (!force && elapsed < SAVE_DEBOUNCE_MS) {
             FTBQuestsSync.LOGGER.debug("markDirty debounced for team={} (lastSaveMs={})", teamId, ftbQuestsSync$lastSaveMs);
+            if (!ftbQuestsSync$trailingFlushScheduled) {
+                ftbQuestsSync$scheduleTrailingFlush(SAVE_DEBOUNCE_MS - elapsed);
+            }
             return;
         }
         ftbQuestsSync$lastSaveMs = now;
 
+        if (force) {
+            FTBQuestsSync.LOGGER.info("Force save triggered for team={} (player leaving)", teamId);
+        }
+
+        ftbQuestsSync$queueSaveNow();
+    }
+
+    @Unique
+    private void ftbQuestsSync$queueSaveNow() {
         long myRev = ftbQuestsSync$syncRevision.incrementAndGet();
 
         SNBTCompoundTag serialized;
@@ -99,10 +115,6 @@ public abstract class TeamDataMixin implements TeamDataAccess {
 
         CompoundTag snapshot = ((CompoundTag) serialized).copy();
         UUID tid = teamId;
-
-        if (force) {
-            FTBQuestsSync.LOGGER.info("Force save triggered for team={} (player leaving)", tid);
-        }
 
         MySQLBackend.getInstance().saveTeamDataAsync(tid, snapshot).whenComplete((result, error) -> {
             if (error != null) {
@@ -123,6 +135,44 @@ public abstract class TeamDataMixin implements TeamDataAccess {
                         tid, myRev, ftbQuestsSync$syncRevision.get());
             }
         });
+    }
+
+    @Unique
+    private void ftbQuestsSync$scheduleTrailingFlush(long delayMs) {
+        net.minecraft.server.MinecraftServer server = net.minecraftforge.server.ServerLifecycleHooks.getCurrentServer();
+        if (server == null) {
+            FTBQuestsSync.LOGGER.warn("Could not schedule trailing quest save for team={} (server unavailable)", teamId);
+            ftbQuestsSync$trailingFlushScheduled = false;
+            return;
+        }
+
+        ftbQuestsSync$trailingFlushScheduled = true;
+        int delayTicks = ftbQuestsSync$delayTicks(delayMs);
+        server.tell(new net.minecraft.server.TickTask(server.getTickCount() + delayTicks, this::ftbQuestsSync$runTrailingFlush));
+    }
+
+    @Unique
+    private int ftbQuestsSync$delayTicks(long delayMs) {
+        long boundedMs = Math.max(50L, Math.min(SAVE_DEBOUNCE_MS, delayMs));
+        return (int) Math.max(1L, (boundedMs + 49L) / 50L);
+    }
+
+    @Unique
+    private void ftbQuestsSync$runTrailingFlush() {
+        ftbQuestsSync$trailingFlushScheduled = false;
+
+        if (!Config.syncQuests || file == null || !file.isServerSide()) return;
+        if (!MySQLBackend.getInstance().isAvailable()) return;
+
+        long now = System.currentTimeMillis();
+        long elapsed = now - ftbQuestsSync$lastSaveMs;
+        if (elapsed < SAVE_DEBOUNCE_MS) {
+            ftbQuestsSync$scheduleTrailingFlush(SAVE_DEBOUNCE_MS - elapsed);
+            return;
+        }
+
+        ftbQuestsSync$lastSaveMs = now;
+        ftbQuestsSync$queueSaveNow();
     }
 
     @Unique

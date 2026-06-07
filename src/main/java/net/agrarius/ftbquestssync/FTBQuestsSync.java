@@ -30,7 +30,7 @@ public class FTBQuestsSync {
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {
-        LOGGER.info("FTB Quests Sync 1.1.2 booting");
+        LOGGER.info("FTB Quests Sync 1.1.8 booting");
         Config.reload();
         MySQLBackend.getInstance().initialize();
         if (Config.syncTeams) {
@@ -51,16 +51,39 @@ public class FTBQuestsSync {
         RedisSync.getInstance().initialize(event.getServer());
         if (Config.syncTeams) {
             TeamSync.getInstance().initializeRedis(event.getServer());
+            PresenceSync.getInstance().initialize(event.getServer());
         }
         RankSoloProgress.init();
         ChunkSeeder.runIfConfigured(event.getServer());
         ChunkMaterializer.materializeAllLoaded(event.getServer());
-        LOGGER.info("FTB Quests Sync 1.1.2 ready (mysqlAvailable={}, redisEnabled={}, teamsRedisEnabled={}, serverId={})",
+        LOGGER.info("FTB Quests Sync 1.1.8 ready (mysqlAvailable={}, redisEnabled={}, teamsRedisEnabled={}, serverId={})",
                 MySQLBackend.getInstance().isAvailable(),
                 RedisSync.getInstance().isEnabled(),
                 TeamSync.getInstance().isEnabled(),
                 RedisSync.getInstance().getServerId());
         serverStarted = true;
+        backfillMissingPlayerNames(event.getServer());
+    }
+
+    private void backfillMissingPlayerNames(net.minecraft.server.MinecraftServer server) {
+        if (!MySQLBackend.getInstance().isAvailable()) return;
+        try {
+            java.util.List<java.util.UUID> missing = MySQLBackend.getInstance().selectMembershipUuidsMissingName();
+            if (missing.isEmpty()) return;
+            java.util.Map<java.util.UUID, String> resolved = new java.util.HashMap<>();
+            for (java.util.UUID uuid : missing) {
+                server.getProfileCache()
+                        .get(uuid)
+                        .map(com.mojang.authlib.GameProfile::getName)
+                        .filter(n -> n != null && !n.isBlank())
+                        .ifPresent(name -> resolved.put(uuid, name));
+            }
+            LOGGER.info("Player-name backfill: {} membership uuid(s) missing a name, {} resolved from UserCache",
+                    missing.size(), resolved.size());
+            MySQLBackend.getInstance().backfillPlayerNamesAsync(resolved);
+        } catch (Exception e) {
+            LOGGER.warn("Player-name backfill failed", e);
+        }
     }
 
     @SubscribeEvent
@@ -72,12 +95,20 @@ public class FTBQuestsSync {
     public void onPlayerLogin(PlayerEvent.PlayerLoggedInEvent event) {
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
         MySQLBackend.getInstance().upsertPlayerNameAsync(player.getUUID(), player.getGameProfile().getName());
+        java.util.UUID loginUuid = player.getUUID();
+        MySQLBackend.getInstance().loadTeamMaterializationAsync(loginUuid).whenComplete((row, err) -> {
+            if (err != null || row == null || row.membership() == null) return;
+            MembershipCache.put(loginUuid, row.membership().teamId());
+        });
         // When syncTeams=true, TeamSync.reconcileOnLogin fires via PlayerLoggedInAfterTeamEvent
         // AFTER FTB Teams has materialized the correct effective team. Running both produces a
         // double async reload race: two DB loads race to win; loser's SyncTeamDataMessage
         // overwrites the winner's fresher state. Confirmed in logs (5-second gap).
         // When syncTeams=false there is no Teams event, so we handle it here directly.
-        if (Config.syncTeams) return;
+        if (Config.syncTeams) {
+            PresenceSync.getInstance().onPlayerLogin(player.getUUID());
+            return;
+        }
         try {
             dev.ftb.mods.ftbquests.quest.TeamData data = dev.ftb.mods.ftbquests.quest.TeamData.get(player);
             RedisSync.getInstance().forceReloadAndPushTo(data.getTeamId(), player);
@@ -91,6 +122,10 @@ public class FTBQuestsSync {
     @SubscribeEvent
     public void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) {
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
+        if (Config.syncTeams) {
+            TeamSync.getInstance().markPlayerDisconnecting(player.getUUID());
+            PresenceSync.getInstance().onPlayerLogout(player.getUUID());
+        }
         if (player.isRemoved()) return;
         if (!Config.syncQuests) return;
         try {
@@ -111,6 +146,8 @@ public class FTBQuestsSync {
 
     @SubscribeEvent
     public void onServerStopping(ServerStoppingEvent event) {
+        PresenceSync.getInstance().markAllLocalOffline();
+        PresenceSync.getInstance().shutdown();
         ChunkSync.getInstance().shutdown();
         TeamSync.getInstance().shutdown();
         RedisSync.getInstance().shutdown();

@@ -63,7 +63,45 @@ public final class FtbSyncTeamCommand {
                                         .executes(ctx -> kick(ctx.getSource(), StringArgumentType.getString(ctx, "player")))))
                         .then(Commands.literal("transfer")
                                 .then(Commands.argument("player", StringArgumentType.word())
-                                        .executes(ctx -> transfer(ctx.getSource(), StringArgumentType.getString(ctx, "player")))))));
+                                        .executes(ctx -> transfer(ctx.getSource(), StringArgumentType.getString(ctx, "player"))))))
+                .then(Commands.literal("chunks")
+                        .requires(src -> src.hasPermission(2))
+                        .then(Commands.literal("setbonus")
+                                .then(Commands.argument("player", StringArgumentType.word())
+                                        .then(Commands.argument("amount", com.mojang.brigadier.arguments.IntegerArgumentType.integer(0, 4096))
+                                                .executes(ctx -> setChunkBonus(
+                                                        ctx.getSource(),
+                                                        StringArgumentType.getString(ctx, "player"),
+                                                        com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(ctx, "amount"))))))));
+    }
+
+    private static int setChunkBonus(CommandSourceStack source, String targetName, int bonusForceLoad) throws CommandSyntaxException {
+        MinecraftServer server = source.getServer();
+        UUID targetId = resolvePlayerUuid(server, targetName);
+        Team team = FTBTeamsAPI.api().getManager().getTeamForPlayerID(targetId).orElse(null);
+        if (team == null) {
+            source.sendFailure(Component.literal("Player has no team yet: " + targetName));
+            return 0;
+        }
+        if (!dev.ftb.mods.ftbchunks.api.FTBChunksAPI.api().isManagerLoaded()) {
+            source.sendFailure(Component.literal("FTB Chunks manager not loaded yet."));
+            return 0;
+        }
+        try {
+            dev.ftb.mods.ftbchunks.api.ChunkTeamData data =
+                    dev.ftb.mods.ftbchunks.api.FTBChunksAPI.api().getManager().getOrCreateData(team);
+            data.setExtraForceLoadChunks(bonusForceLoad);
+            ChunkLimitPatcher.ensureCapacity(data, 0, bonusForceLoad);
+            source.sendSuccess(() -> Component.literal(
+                    "Set bonus force-load chunks for " + targetName + " (team " + team.getId() + ") to " + bonusForceLoad), true);
+            FTBQuestsSync.LOGGER.info("Chunk bonus set via command: player={} team={} bonusForceLoad={}",
+                    targetId, team.getId(), bonusForceLoad);
+            return Command.SINGLE_SUCCESS;
+        } catch (Exception e) {
+            FTBQuestsSync.LOGGER.error("setChunkBonus failed player={} team={}", targetId, team.getId(), e);
+            source.sendFailure(Component.literal("Failed to set chunk bonus: " + e.getMessage()));
+            return 0;
+        }
     }
 
     private static int invite(CommandSourceStack source, String targetName) throws CommandSyntaxException {
@@ -75,11 +113,8 @@ public final class FtbSyncTeamCommand {
         MySQLBackend.TeamMembershipRow current = db.selectMembership(targetId).orElse(null);
         if (current != null && ctx.team().getId().equals(current.teamId())) throw ALREADY_MEMBER.create();
 
-        TeamSync.getInstance().persistTeamNow(ctx.team());
-        db.upsertMembership(targetId, ctx.team().getId(), "MEMBER");
-        TeamSync.getInstance().publishMemberAdd(ctx.team().getId(), targetId);
-        ctx.server().execute(() -> applyMemberAddLocal(ctx.server(), ctx.team().getId(), targetId, "MEMBER"));
-        source.sendSuccess(() -> Component.literal("FTB Sync invite/add queued for " + target.getName()), false);
+        TeamSync.getInstance().queueInvite(ctx.player(), (PartyTeam) ctx.team(), target);
+        source.sendSuccess(() -> Component.literal("FTB Sync invite queued for " + target.getName()), false);
         return Command.SINGLE_SUCCESS;
     }
 
@@ -144,7 +179,7 @@ public final class FtbSyncTeamCommand {
         return Command.SINGLE_SUCCESS;
     }
 
-    static void applyMemberAddLocal(MinecraftServer server, UUID teamId, UUID playerId, String rank) {
+    public static void applyMemberAddLocal(MinecraftServer server, UUID teamId, UUID playerId, String rank) {
         TeamManager mgr = FTBTeamsAPI.api().getManager();
         if (!TeamMaterializer.ensureTeamMaterialized(teamId)) return;
         Team team = mgr.getTeamByID(teamId).orElse(null);
@@ -160,7 +195,7 @@ public final class FtbSyncTeamCommand {
         if (player != null) TeamSync.getInstance().forceFullSyncToPlayer(player, teamId);
     }
 
-    static void applyMemberKickLocal(MinecraftServer server, UUID teamId, UUID playerId,
+    public static void applyMemberKickLocal(MinecraftServer server, UUID teamId, UUID playerId,
                                      MySQLBackend.TeamMaterializationRow row) {
         TeamManager mgr = FTBTeamsAPI.api().getManager();
         Team oldTeam = mgr.getTeamByID(teamId).orElse(null);
@@ -207,7 +242,7 @@ public final class FtbSyncTeamCommand {
         }
     }
 
-    static void applyOwnerTransferLocal(MinecraftServer server, CommandSourceStack source, UUID teamId,
+    public static void applyOwnerTransferLocal(MinecraftServer server, CommandSourceStack source, UUID teamId,
                                         GameProfile newOwner, List<MySQLBackend.TeamMemberRow> members) {
         TeamManager mgr = FTBTeamsAPI.api().getManager();
         if (!TeamMaterializer.ensureTeamMaterialized(teamId)) return;
