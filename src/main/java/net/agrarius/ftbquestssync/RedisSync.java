@@ -293,7 +293,7 @@ public class RedisSync {
                 FTBQuestsSync.LOGGER.info(
                         "Force reload on login: no DB row for team={} (player={}) - keeping local state",
                         teamId, recipient.getUUID());
-                MySQLBackend.setTeamLoadState(teamId, MySQLBackend.TeamLoadState.NEW);
+                TeamLoadStateRegistry.setTeamLoadState(teamId, TeamLoadStateRegistry.TeamLoadState.NEW);
                 return;
             }
             server.execute(() -> {
@@ -318,7 +318,7 @@ public class RedisSync {
                     }
                     clearCachedProgress(live);
                     clearRewardsBlocked(live);
-                    MySQLBackend.setTeamLoadState(teamId, MySQLBackend.TeamLoadState.LOADED);
+                    TeamLoadStateRegistry.setTeamLoadState(teamId, TeamLoadStateRegistry.TeamLoadState.LOADED);
 
                     new SyncTeamDataMessage(live, true).sendTo(java.util.List.of(recipient));
                     RankSoloProgress.pushToPlayerAsync(live, recipient);
@@ -411,7 +411,7 @@ public class RedisSync {
                 map.put(teamId, teamData);
             }
 
-            MySQLBackend.setTeamLoadState(teamId, MySQLBackend.TeamLoadState.LOADED);
+            TeamLoadStateRegistry.setTeamLoadState(teamId, TeamLoadStateRegistry.TeamLoadState.LOADED);
             clearRewardsBlocked(teamData);
             boolean advancedShopCycle = !forceReplace && localBeforeMerge != null && hasAdvancedShopCycle(localBeforeMerge, fresh, file);
             int forcedShopResets = ShopRepeatableSync.resetAllCompleteShopQuests(teamData);

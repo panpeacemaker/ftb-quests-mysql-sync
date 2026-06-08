@@ -68,7 +68,7 @@ public final class TeamMaterializer {
         // Reflective create/add below can fire synthetic TeamCreated/Joined events;
         // pin LOADING so onCreated does not flip this DB-owned team to NEW and let
         // empty local state overwrite the authoritative MySQL blob before reload.
-        MySQLBackend.setTeamLoadState(dbTeamId, MySQLBackend.TeamLoadState.LOADING);
+        TeamLoadStateRegistry.setTeamLoadState(dbTeamId, TeamLoadStateRegistry.TeamLoadState.LOADING);
 
         if (dbTeamId.equals(playerUuid)) {
             Team current = mgr.getTeamForPlayerID(playerUuid).orElse(null);

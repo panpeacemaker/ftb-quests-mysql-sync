@@ -3,7 +3,8 @@ package net.agrarius.ftbquestssync.mixin;
 import net.agrarius.ftbquestssync.Config;
 import net.agrarius.ftbquestssync.FTBQuestsSync;
 import net.agrarius.ftbquestssync.MySQLBackend;
-import net.agrarius.ftbquestssync.MySQLBackend.TeamLoadState;
+import net.agrarius.ftbquestssync.TeamLoadStateRegistry;
+import net.agrarius.ftbquestssync.TeamLoadStateRegistry.TeamLoadState;
 import dev.ftb.mods.ftblibrary.snbt.SNBTCompoundTag;
 import dev.ftb.mods.ftbquests.quest.BaseQuestFile;
 import dev.ftb.mods.ftbquests.quest.TeamData;
@@ -36,7 +37,7 @@ public abstract class BaseQuestFileMixin {
         TeamData existing = teamDataMap.get(teamId);
         if (existing != null) return;
 
-        TeamLoadState state = MySQLBackend.getTeamLoadState(teamId);
+        TeamLoadState state = TeamLoadStateRegistry.getTeamLoadState(teamId);
         if (state == TeamLoadState.LOADING || state == TeamLoadState.LOADED || state == TeamLoadState.NEW) return;
 
         // Put a placeholder so FTB doesn't create its own empty TeamData yet,
@@ -44,24 +45,24 @@ public abstract class BaseQuestFileMixin {
         BaseQuestFile file = (BaseQuestFile) (Object) this;
         TeamData placeholder = new TeamData(teamId, file);
         teamDataMap.put(teamId, placeholder);
-        MySQLBackend.setTeamLoadState(teamId, TeamLoadState.LOADING);
+        TeamLoadStateRegistry.setTeamLoadState(teamId, TeamLoadState.LOADING);
         cir.setReturnValue(placeholder);
 
         MySQLBackend.getInstance().loadTeamDataAsync(teamId).whenComplete((tag, err) -> {
             if (err != null) {
                 FTBQuestsSync.LOGGER.error("Async MySQL load failed for team {} - saves blocked", teamId, err);
-                MySQLBackend.setTeamLoadState(teamId, TeamLoadState.FAILED);
+                TeamLoadStateRegistry.setTeamLoadState(teamId, TeamLoadState.FAILED);
                 return;
             }
             if (tag == null) {
                 FTBQuestsSync.LOGGER.debug("No MySQL data for team {} - treating as new", teamId);
-                MySQLBackend.setTeamLoadState(teamId, TeamLoadState.NEW);
+                TeamLoadStateRegistry.setTeamLoadState(teamId, TeamLoadState.NEW);
                 return;
             }
             // Hydrate on server thread — teamDataMap must only be mutated there.
             net.minecraft.server.MinecraftServer srv = net.minecraftforge.server.ServerLifecycleHooks.getCurrentServer();
             if (srv == null) {
-                MySQLBackend.setTeamLoadState(teamId, TeamLoadState.FAILED);
+                TeamLoadStateRegistry.setTeamLoadState(teamId, TeamLoadState.FAILED);
                 return;
             }
             srv.execute(() -> {
@@ -72,11 +73,11 @@ public abstract class BaseQuestFileMixin {
                         teamDataMap.put(teamId, td);
                     }
                     td.deserializeNBT(SNBTCompoundTag.of(tag));
-                    MySQLBackend.setTeamLoadState(teamId, TeamLoadState.LOADED);
+                    TeamLoadStateRegistry.setTeamLoadState(teamId, TeamLoadState.LOADED);
                     FTBQuestsSync.LOGGER.info("Hydrated team {} from MySQL async (getOrCreate)", teamId);
                 } catch (Exception e) {
                     FTBQuestsSync.LOGGER.error("Failed to hydrate team {} from MySQL", teamId, e);
-                    MySQLBackend.setTeamLoadState(teamId, TeamLoadState.FAILED);
+                    TeamLoadStateRegistry.setTeamLoadState(teamId, TeamLoadState.FAILED);
                 }
             });
         });
