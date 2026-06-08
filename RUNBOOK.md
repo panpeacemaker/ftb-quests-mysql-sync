@@ -183,8 +183,8 @@ cd web && npm audit            # act on HIGH/CRITICAL only
   ```
   gitleaks detect --no-banner --redact --source .
   ```
-  Result (fill on run): __________ (date: ______). Do not consider the secret-scan gate
-  fully green on the inline-grep alone.
+  Result: `gitleaks v8` (docker `zricethezav/gitleaks:latest`) — **no leaks found**, 34 commits
+  / 1.24 MB scanned, 2026-06-08. Secret-scan gate GREEN.
 
 ---
 
