@@ -1,7 +1,5 @@
 package net.agrarius.ftbquestssync;
 
-import com.zaxxer.hikari.HikariConfig;
-import com.zaxxer.hikari.HikariDataSource;
 import net.minecraft.nbt.CompoundTag;
 
 import java.io.ByteArrayInputStream;
@@ -375,7 +373,7 @@ public class MySQLBackend {
         return getTeamLoadState(teamId) == TeamLoadState.LOADED;
     }
 
-    private HikariDataSource dataSource;
+    private ConnectionProvider connectionProvider;
     private volatile boolean initialized;
     private final ExecutorService dbExecutor = new ThreadPoolExecutor(
             1,
@@ -398,7 +396,7 @@ public class MySQLBackend {
     }
 
     public boolean isAvailable() {
-        return initialized && dataSource != null && !dataSource.isClosed();
+        return initialized && connectionProvider != null && connectionProvider.isAvailable();
     }
 
     public void initialize() {
@@ -412,21 +410,8 @@ public class MySQLBackend {
                 return;
             }
 
-            HikariConfig hc = new HikariConfig();
-            hc.setDriverClassName("com.mysql.cj.jdbc.Driver");
-            hc.setJdbcUrl(String.format(
-                    "jdbc:mysql://%s:%d/%s?useSSL=%s&requireSSL=%s&allowPublicKeyRetrieval=%s",
-                    Config.mysqlHost, Config.mysqlPort, Config.mysqlDatabase,
-                    Config.mysqlUseSsl, Config.mysqlUseSsl, Config.mysqlAllowPublicKeyRetrieval));
-            hc.setUsername(Config.mysqlUsername);
-            hc.setPassword(Config.mysqlPassword);
-            hc.setMaximumPoolSize(Math.max(1, Config.mysqlMaxPool));
-            hc.setMinimumIdle(Math.max(0, Config.mysqlMinIdle));
-            hc.setConnectionTimeout(1_000L);
-            hc.setPoolName("FTBQuestsSync-Pool");
-
-            Class.forName("com.mysql.cj.jdbc.Driver");
-            dataSource = new HikariDataSource(hc);
+            connectionProvider = new ConnectionProvider();
+            connectionProvider.open();
             ensureSchema();
             initialized = true;
 
@@ -440,7 +425,7 @@ public class MySQLBackend {
     }
 
     private void ensureSchema() throws Exception {
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              Statement st = conn.createStatement()) {
             st.execute(SQL_CREATE);
             st.execute(SQL_CREATE_CLAIMS);
@@ -629,7 +614,7 @@ public class MySQLBackend {
                     + "(team={} reward={} scopeType={} scopeUuid={} cycle={})", teamId, rewardId, scopeType, scopeUuid, cycle);
             return new ScopedClaimResult(!Config.rewardFailClosed, false);
         }
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_TRY_CLAIM_SCOPED)) {
 
             ps.setString(1, scopeType);
@@ -753,7 +738,7 @@ public class MySQLBackend {
             FTBQuestsSync.LOGGER.warn("Save blocked for team {} - load state={}", teamId, state);
             return null;
         }
-        try (Connection conn = dataSource.getConnection()) {
+        try (Connection conn = connectionProvider.getConnection()) {
             CompoundTag sanitized = tag.copy();
             RankSoloProgress.stripRankSharedProgress(sanitized);
             ByteArrayOutputStream buf = new ByteArrayOutputStream();
@@ -807,7 +792,7 @@ public class MySQLBackend {
     public SaveResult saveTeamData(UUID teamId, CompoundTag tag) {
         if (!isAvailable()) return null;
 
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_UPSERT)) {
 
             CompoundTag sanitized = tag.copy();
@@ -855,7 +840,7 @@ public class MySQLBackend {
     public CompoundTag loadTeamData(UUID teamId) {
         if (!isAvailable()) return null;
 
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_SELECT)) {
 
             ps.setString(1, teamId.toString());
@@ -882,7 +867,7 @@ public class MySQLBackend {
         if (!isAvailable()) return false;
         String serverId = RedisSync.getInstance().getServerId();
 
-        try (Connection conn = dataSource.getConnection()) {
+        try (Connection conn = connectionProvider.getConnection()) {
             boolean previousAutoCommit = conn.getAutoCommit();
             try {
                 conn.setAutoCommit(false);
@@ -1046,7 +1031,7 @@ public class MySQLBackend {
 
     private SaveResult loadMetaForPublish(UUID teamId) {
         if (!isAvailable()) return null;
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_SELECT)) {
             ps.setString(1, teamId.toString());
             try (ResultSet rs = ps.executeQuery()) {
@@ -1065,7 +1050,7 @@ public class MySQLBackend {
 
     public void deleteRewardClaim(UUID teamId, long rewardId, UUID claimUuid) {
         if (!isAvailable()) return;
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_DELETE_CLAIM)) {
             ps.setString(1, teamId.toString());
             ps.setLong(2, rewardId);
@@ -1090,7 +1075,7 @@ public class MySQLBackend {
 
     private void deleteRewardClaimScoped(String scopeType, UUID scopeUuid, long rewardId) {
         if (!isAvailable()) return;
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_DELETE_CLAIM_SCOPED)) {
             ps.setString(1, scopeType);
             ps.setString(2, scopeUuid.toString());
@@ -1106,7 +1091,7 @@ public class MySQLBackend {
 
     public void deleteAllClaimsForReward(UUID teamId, long rewardId) {
         if (!isAvailable()) return;
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_DELETE_ALL_CLAIMS_FOR_REWARD)) {
             ps.setString(1, teamId.toString());
             ps.setLong(2, rewardId);
@@ -1132,7 +1117,7 @@ public class MySQLBackend {
 
     private void deleteAllScopedClaimsForReward(UUID teamId, long rewardId) {
         if (!isAvailable()) return;
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_DELETE_ALL_CLAIMS_SCOPED_FOR_REWARD)) {
             ps.setString(1, teamId.toString());
             ps.setLong(2, rewardId);
@@ -1154,7 +1139,7 @@ public class MySQLBackend {
     }
 
     private void upsertTeamInfoOrThrow(UUID teamId, String type, String name, UUID owner, String color) throws Exception {
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_UPSERT_TEAM_INFO)) {
             ps.setString(1, teamId.toString());
             ps.setString(2, type);
@@ -1187,7 +1172,7 @@ public class MySQLBackend {
     }
 
     private void upsertTeamInfoNoOwnerOrThrow(UUID teamId, String type, String name, UUID owner, String color) throws Exception {
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_UPSERT_TEAM_INFO_NO_OWNER)) {
             ps.setString(1, teamId.toString());
             ps.setString(2, type);
@@ -1244,7 +1229,7 @@ public class MySQLBackend {
 
     public void markTeamDeleted(UUID teamId) {
         if (!isAvailable()) return;
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_MARK_TEAM_DELETED)) {
             ps.setString(1, RedisSync.getInstance().getServerId());
             ps.setString(2, teamId.toString());
@@ -1274,7 +1259,7 @@ public class MySQLBackend {
     }
 
     private void upsertMembershipOrThrow(UUID playerUuid, UUID teamId, String rank) throws Exception {
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_UPSERT_MEMBERSHIP)) {
             ps.setString(1, playerUuid.toString());
             ps.setString(2, teamId.toString());
@@ -1313,7 +1298,7 @@ public class MySQLBackend {
 
     public void upsertOwnPlayerMembershipIfAbsentOrSelf(UUID playerUuid, String rank) {
         if (!isAvailable()) return;
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_UPSERT_OWN_PLAYER_MEMBERSHIP_IF_ABSENT_OR_SELF)) {
             ps.setString(1, playerUuid.toString());
             ps.setString(2, playerUuid.toString());
@@ -1337,7 +1322,7 @@ public class MySQLBackend {
 
     public void upsertPlayerName(UUID playerUuid, String playerName) {
         if (!isAvailable() || playerName == null || playerName.isBlank()) return;
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_UPSERT_PLAYER_NAME)) {
             ps.setString(1, playerUuid.toString());
             ps.setString(2, playerName);
@@ -1362,7 +1347,7 @@ public class MySQLBackend {
                 + "LEFT JOIN ftbquests_player_names n ON n.player_uuid = m.player_uuid "
                 + "WHERE n.player_uuid IS NULL OR n.player_name IS NULL OR n.player_name = ''";
         List<UUID> out = new ArrayList<>();
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql);
              ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {
@@ -1397,7 +1382,7 @@ public class MySQLBackend {
 
     public Optional<UUID> selectPlayerUuidByName(String playerName) {
         if (!isAvailable() || playerName == null || playerName.isBlank()) return Optional.empty();
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_SELECT_PLAYER_UUID_BY_NAME)) {
             ps.setString(1, playerName);
             try (ResultSet rs = ps.executeQuery()) {
@@ -1411,7 +1396,7 @@ public class MySQLBackend {
 
     public Optional<String> selectPlayerNameByUuid(UUID playerUuid) {
         if (!isAvailable()) return Optional.empty();
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_SELECT_PLAYER_NAME_BY_UUID)) {
             ps.setString(1, playerUuid.toString());
             try (ResultSet rs = ps.executeQuery()) {
@@ -1440,7 +1425,7 @@ public class MySQLBackend {
         }
         sql.append(')');
 
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql.toString())) {
             for (int i = 0; i < uuids.size(); i++) {
                 ps.setString(i + 1, uuids.get(i).toString());
@@ -1476,7 +1461,7 @@ public class MySQLBackend {
 
     public java.util.Optional<TeamMembershipRow> selectMembership(UUID playerUuid) {
         if (!isAvailable()) return java.util.Optional.empty();
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_SELECT_MEMBERSHIP)) {
             ps.setString(1, playerUuid.toString());
             try (ResultSet rs = ps.executeQuery()) {
@@ -1511,7 +1496,7 @@ public class MySQLBackend {
 
     public java.util.Optional<TeamInfoRow> selectTeamInfo(UUID teamId) {
         if (!isAvailable()) return java.util.Optional.empty();
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_SELECT_TEAM_INFO)) {
             ps.setString(1, teamId.toString());
             try (ResultSet rs = ps.executeQuery()) {
@@ -1555,7 +1540,7 @@ public class MySQLBackend {
     public boolean updateTeamOwner(UUID teamId, UUID newOwner) {
         if (!isAvailable()) return false;
         String serverId = RedisSync.getInstance().getServerId();
-        try (Connection conn = dataSource.getConnection()) {
+        try (Connection conn = connectionProvider.getConnection()) {
             boolean previousAutoCommit = conn.getAutoCommit();
             try {
                 conn.setAutoCommit(false);
@@ -1620,7 +1605,7 @@ public class MySQLBackend {
 
     public void upsertRankProgress(UUID playerUuid, long questId, long taskId, long progress, long completedAtMs) {
         if (!isAvailable()) return;
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_UPSERT_RANK_PROGRESS)) {
             ps.setString(1, playerUuid.toString());
             ps.setLong(2, questId);
@@ -1646,7 +1631,7 @@ public class MySQLBackend {
 
     public void deleteRankProgress(UUID playerUuid, long questId) {
         if (!isAvailable()) return;
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_DELETE_RANK_PROGRESS)) {
             ps.setString(1, playerUuid.toString());
             ps.setLong(2, questId);
@@ -1669,7 +1654,7 @@ public class MySQLBackend {
     public java.util.List<RankProgressRow> loadRankProgress(UUID playerUuid) {
         java.util.List<RankProgressRow> result = new java.util.ArrayList<>();
         if (!isAvailable()) return result;
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_SELECT_RANK_PROGRESS)) {
             ps.setString(1, playerUuid.toString());
             try (ResultSet rs = ps.executeQuery()) {
@@ -1704,7 +1689,7 @@ public class MySQLBackend {
     }
 
     private ChunkWriteResult upsertChunkClaim(ChunkClaimRecord record) {
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_UPSERT_CHUNK_CLAIM)) {
             bindChunkClaim(ps, record, System.currentTimeMillis());
             ps.executeUpdate();
@@ -1733,7 +1718,7 @@ public class MySQLBackend {
     }
 
     private boolean deleteChunkClaim(UUID teamId, String dimension, int x, int z) {
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_DELETE_CHUNK_CLAIM)) {
             ps.setString(1, teamId.toString());
             ps.setString(2, dimension);
@@ -1760,7 +1745,7 @@ public class MySQLBackend {
     }
 
     private boolean replaceChunkClaimsForTeams(Set<UUID> teamIds, List<ChunkClaimRecord> rows) {
-        try (Connection conn = dataSource.getConnection()) {
+        try (Connection conn = connectionProvider.getConnection()) {
             conn.setAutoCommit(false);
             try (PreparedStatement del = conn.prepareStatement(SQL_DELETE_CHUNK_CLAIMS_FOR_TEAM)) {
                 for (UUID teamId : teamIds) {
@@ -1792,7 +1777,7 @@ public class MySQLBackend {
     public List<ChunkClaimRecord> loadChunkClaims(UUID teamId) {
         List<ChunkClaimRecord> rows = new ArrayList<>();
         if (!isAvailable()) return rows;
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_SELECT_CHUNK_CLAIMS_TEAM)) {
             ps.setString(1, teamId.toString());
             try (ResultSet rs = ps.executeQuery()) {
@@ -1816,7 +1801,7 @@ public class MySQLBackend {
 
     private List<ChunkClaimRecord> loadChunkClaimsForDimension(String dimension) {
         List<ChunkClaimRecord> rows = new ArrayList<>();
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_SELECT_CHUNK_CLAIMS_DIMENSION)) {
             ps.setString(1, dimension);
             try (ResultSet rs = ps.executeQuery()) {
@@ -1830,7 +1815,7 @@ public class MySQLBackend {
 
     public Optional<UUID> loadChunkOwner(String dimension, int x, int z) {
         if (!isAvailable()) return Optional.empty();
-        try (Connection conn = dataSource.getConnection()) {
+        try (Connection conn = connectionProvider.getConnection()) {
             return loadChunkOwner(conn, dimension, x, z);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.error("loadChunkOwner failed dim={} x={} z={}", dimension, x, z, e);
@@ -1860,7 +1845,7 @@ public class MySQLBackend {
     }
 
     private boolean isChunksSeeded() {
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_SELECT_SYNC_META)) {
             ps.setString(1, "ftbchunks_seeded");
             try (ResultSet rs = ps.executeQuery()) {
@@ -1884,7 +1869,7 @@ public class MySQLBackend {
     }
 
     private int seedChunkClaims(List<ChunkClaimRecord> rows) {
-        try (Connection conn = dataSource.getConnection()) {
+        try (Connection conn = connectionProvider.getConnection()) {
             conn.setAutoCommit(false);
             int inserted = batchInsertChunkClaims(conn, rows, false);
             try (PreparedStatement ps = conn.prepareStatement(SQL_UPSERT_SYNC_META)) {
@@ -1962,7 +1947,7 @@ public class MySQLBackend {
     public java.util.List<TeamMemberRow> selectTeamMembers(UUID teamId) {
         java.util.List<TeamMemberRow> result = new java.util.ArrayList<>();
         if (!isAvailable()) return result;
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_SELECT_MEMBERS_OF_TEAM)) {
             ps.setString(1, teamId.toString());
             try (ResultSet rs = ps.executeQuery()) {
@@ -1978,7 +1963,7 @@ public class MySQLBackend {
 
     public void upsertTeamInvite(UUID teamId, UUID invitedUuid, UUID inviterUuid) {
         if (!isAvailable()) return;
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_UPSERT_INVITE)) {
             ps.setString(1, teamId.toString());
             ps.setString(2, invitedUuid.toString());
@@ -2003,7 +1988,7 @@ public class MySQLBackend {
 
     public void deleteTeamInvite(UUID teamId, UUID invitedUuid) {
         if (!isAvailable()) return;
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_DELETE_INVITE)) {
             ps.setString(1, teamId.toString());
             ps.setString(2, invitedUuid.toString());
@@ -2025,7 +2010,7 @@ public class MySQLBackend {
 
     public void deleteTeamInvitesForTeam(UUID teamId) {
         if (!isAvailable()) return;
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_DELETE_INVITES_FOR_TEAM)) {
             ps.setString(1, teamId.toString());
             int rows = ps.executeUpdate();
@@ -2046,7 +2031,7 @@ public class MySQLBackend {
 
     public java.util.Optional<TeamInviteRow> selectTeamInvite(UUID teamId, UUID invitedUuid) {
         if (!isAvailable()) return java.util.Optional.empty();
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_SELECT_INVITE)) {
             ps.setString(1, teamId.toString());
             ps.setString(2, invitedUuid.toString());
@@ -2066,7 +2051,7 @@ public class MySQLBackend {
     public java.util.List<TeamInviteRow> selectTeamInvites(UUID teamId) {
         java.util.List<TeamInviteRow> result = new java.util.ArrayList<>();
         if (!isAvailable()) return result;
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_SELECT_INVITES_FOR_TEAM)) {
             ps.setString(1, teamId.toString());
             try (ResultSet rs = ps.executeQuery()) {
@@ -2086,7 +2071,7 @@ public class MySQLBackend {
     public java.util.List<TeamInviteRow> selectInvitesForPlayer(UUID playerUuid) {
         java.util.List<TeamInviteRow> result = new java.util.ArrayList<>();
         if (!isAvailable()) return result;
-        try (Connection conn = dataSource.getConnection();
+        try (Connection conn = connectionProvider.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_SELECT_INVITES_FOR_PLAYER)) {
             ps.setString(1, playerUuid.toString());
             try (ResultSet rs = ps.executeQuery()) {
@@ -2117,7 +2102,7 @@ public class MySQLBackend {
         if (!isAvailable()) return CompletableFuture.failedFuture(new IllegalStateException("MySQL unavailable"));
         try {
             return CompletableFuture.runAsync(() -> {
-                try (Connection conn = dataSource.getConnection()) {
+                try (Connection conn = connectionProvider.getConnection()) {
                     boolean previousAutoCommit = conn.getAutoCommit();
                     try {
                         conn.setAutoCommit(false);
@@ -2185,8 +2170,8 @@ public class MySQLBackend {
         } catch (InterruptedException ignored) {
             Thread.currentThread().interrupt();
         }
-        if (dataSource != null && !dataSource.isClosed()) {
-            dataSource.close();
+        if (connectionProvider != null) {
+            connectionProvider.close();
         }
     }
 }
