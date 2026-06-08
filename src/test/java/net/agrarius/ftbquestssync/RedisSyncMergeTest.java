@@ -1,9 +1,19 @@
 package net.agrarius.ftbquestssync;
 
+import dev.ftb.mods.ftbquests.quest.BaseQuestFile;
+import dev.ftb.mods.ftbquests.quest.Chapter;
+import dev.ftb.mods.ftbquests.quest.Quest;
+import dev.ftb.mods.ftbquests.quest.QuestObjectBase;
 import net.minecraft.nbt.CompoundTag;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+import java.util.Set;
+
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 class RedisSyncMergeTest {
 
@@ -211,5 +221,149 @@ class RedisSyncMergeTest {
 
         assertTrue(local.equals(localCopy), "local argument must not be mutated");
         assertTrue(remote.equals(remoteCopy), "remote argument must not be mutated");
+    }
+
+    private static final long CHAP_ID = 42L;
+    private static final long QUEST_ID = 12345L;
+    private Set<Long> originalTeamClaimChapterIds;
+
+    @BeforeEach
+    void saveConfig() {
+        originalTeamClaimChapterIds = Config.teamClaimChapterIds;
+    }
+
+    @AfterEach
+    void restoreConfig() {
+        Config.teamClaimChapterIds = originalTeamClaimChapterIds;
+    }
+
+    private static BaseQuestFile mockFileWithChapter(Chapter chapter) {
+        BaseQuestFile file = mock(BaseQuestFile.class);
+        when(file.getAllChapters()).thenReturn(List.of(chapter));
+        return file;
+    }
+
+    @Test
+    void shopCycle_remoteAdvanced_adoptsRemoteState() {
+        Config.teamClaimChapterIds = Set.of(CHAP_ID);
+
+        Quest quest = new Quest(QUEST_ID, null);
+        Chapter chapter = new Chapter(CHAP_ID, null, null) {
+            @Override
+            public List<Quest> getQuests() {
+                return List.of(quest);
+            }
+        };
+        BaseQuestFile file = mockFileWithChapter(chapter);
+
+        String questKey = QuestObjectBase.getCodeString(QUEST_ID);
+
+        CompoundTag local = c();
+        local.put("completion_count", tag(questKey, 1L));
+        local.put("started", tag(questKey, 100L));
+
+        CompoundTag remote = c();
+        remote.put("completion_count", tag(questKey, 2L));
+        remote.put("started", tag(questKey, 500L));
+
+        CompoundTag result = RedisSync.mergeTeamDataNbt(local, remote, file);
+
+        assertEquals(2L, result.getCompound("completion_count").getLong(questKey),
+                "remote advanced cycle => remote completion_count wins");
+        assertEquals(500L, result.getCompound("started").getLong(questKey),
+                "remote advanced cycle => local stale started cleared, remote 500 adopted");
+    }
+
+    @Test
+    void shopCycle_localAdvanced_keepsLocalState() {
+        Config.teamClaimChapterIds = Set.of(CHAP_ID);
+
+        Quest quest = new Quest(QUEST_ID, null);
+        Chapter chapter = new Chapter(CHAP_ID, null, null) {
+            @Override
+            public List<Quest> getQuests() {
+                return List.of(quest);
+            }
+        };
+        BaseQuestFile file = mockFileWithChapter(chapter);
+
+        String questKey = QuestObjectBase.getCodeString(QUEST_ID);
+
+        CompoundTag local = c();
+        local.put("completion_count", tag(questKey, 3L));
+        local.put("started", tag(questKey, 100L));
+
+        CompoundTag remote = c();
+        remote.put("completion_count", tag(questKey, 1L));
+        remote.put("started", tag(questKey, 50L));
+
+        CompoundTag result = RedisSync.mergeTeamDataNbt(local, remote, file);
+
+        assertEquals(3L, result.getCompound("completion_count").getLong(questKey),
+                "local advanced cycle => local completion_count preserved");
+        assertEquals(100L, result.getCompound("started").getLong(questKey),
+                "local advanced cycle => remote stale started cleared, local 100 preserved");
+    }
+
+    @Test
+    void shopCycle_chapterNotClaimed_normalMergeApplies() {
+        Config.teamClaimChapterIds = Set.of(999L);
+
+        Quest quest = new Quest(QUEST_ID, null);
+        Chapter chapter = new Chapter(CHAP_ID, null, null) {
+            @Override
+            public List<Quest> getQuests() {
+                return List.of(quest);
+            }
+        };
+        BaseQuestFile file = mockFileWithChapter(chapter);
+
+        String questKey = QuestObjectBase.getCodeString(QUEST_ID);
+
+        CompoundTag local = c();
+        local.put("completion_count", tag(questKey, 1L));
+        local.put("started", tag(questKey, 100L));
+
+        CompoundTag remote = c();
+        remote.put("completion_count", tag(questKey, 2L));
+        remote.put("started", tag(questKey, 500L));
+
+        CompoundTag result = RedisSync.mergeTeamDataNbt(local, remote, file);
+
+        assertEquals(2L, result.getCompound("completion_count").getLong(questKey),
+                "chapter not claimed => normal MAX merge for completion_count");
+        assertEquals(100L, result.getCompound("started").getLong(questKey),
+                "chapter not claimed => normal MIN merge for started");
+    }
+
+    @Test
+    void shopCycle_equalCycles_normalMerge() {
+        Config.teamClaimChapterIds = Set.of(CHAP_ID);
+
+        Quest quest = new Quest(QUEST_ID, null);
+        Chapter chapter = new Chapter(CHAP_ID, null, null) {
+            @Override
+            public List<Quest> getQuests() {
+                return List.of(quest);
+            }
+        };
+        BaseQuestFile file = mockFileWithChapter(chapter);
+
+        String questKey = QuestObjectBase.getCodeString(QUEST_ID);
+
+        CompoundTag local = c();
+        local.put("completion_count", tag(questKey, 2L));
+        local.put("started", tag(questKey, 100L));
+
+        CompoundTag remote = c();
+        remote.put("completion_count", tag(questKey, 2L));
+        remote.put("started", tag(questKey, 50L));
+
+        CompoundTag result = RedisSync.mergeTeamDataNbt(local, remote, file);
+
+        assertEquals(2L, result.getCompound("completion_count").getLong(questKey),
+                "equal cycles => normal MAX merge for completion_count");
+        assertEquals(50L, result.getCompound("started").getLong(questKey),
+                "equal cycles => normal MIN merge for started");
     }
 }
