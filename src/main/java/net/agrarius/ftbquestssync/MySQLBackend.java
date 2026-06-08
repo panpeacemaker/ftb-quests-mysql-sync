@@ -225,22 +225,6 @@ public class MySQLBackend {
     private static final String SQL_SELECT_INVITES_FOR_PLAYER =
             "SELECT team_id, invited_uuid, inviter_uuid FROM ftbquests_team_invites WHERE invited_uuid=?";
 
-    public enum TeamLoadState { UNKNOWN, LOADING, LOADED, NEW, FAILED }
-
-    private static final ConcurrentHashMap<UUID, TeamLoadState> teamLoadStates = new ConcurrentHashMap<>();
-
-    public static TeamLoadState getTeamLoadState(UUID teamId) {
-        return teamLoadStates.getOrDefault(teamId, TeamLoadState.UNKNOWN);
-    }
-
-    public static void setTeamLoadState(UUID teamId, TeamLoadState state) {
-        teamLoadStates.put(teamId, state);
-    }
-
-    public static boolean isTeamSafeToWrite(UUID teamId) {
-        return getTeamLoadState(teamId) == TeamLoadState.LOADED;
-    }
-
     private ConnectionProvider connectionProvider;
     private volatile boolean initialized;
     private final ExecutorService dbExecutor = new ThreadPoolExecutor(
@@ -457,7 +441,7 @@ public class MySQLBackend {
      */
     public CompletableFuture<SaveResult> saveTeamDataAsync(UUID teamId, CompoundTag tag) {
         if (!isAvailable()) return CompletableFuture.completedFuture(null);
-        TeamLoadState state = getTeamLoadState(teamId);
+        TeamLoadStateRegistry.TeamLoadState state = TeamLoadStateRegistry.getTeamLoadState(teamId);
         // LOADED is the only state where a revision-incrementing upsert is safe.
         // UNKNOWN/NEW means we may not have a DB row yet: the upsert path would
         // either clobber an unloaded existing row or be blocked outright. Route
@@ -465,10 +449,10 @@ public class MySQLBackend {
         // and the insert on the single dbExecutor thread, so a brand-new party's
         // blob is persisted without ever overwriting populated DB data.
         try {
-            if (state == TeamLoadState.LOADED) {
+            if (state == TeamLoadStateRegistry.TeamLoadState.LOADED) {
                 return CompletableFuture.supplyAsync(() -> saveTeamData(teamId, tag), dbExecutor);
             }
-            if (state == TeamLoadState.UNKNOWN || state == TeamLoadState.NEW) {
+            if (state == TeamLoadStateRegistry.TeamLoadState.UNKNOWN || state == TeamLoadStateRegistry.TeamLoadState.NEW) {
                 return CompletableFuture.supplyAsync(() -> saveInitialTeamDataIfAbsent(teamId, tag), dbExecutor);
             }
             FTBQuestsSync.LOGGER.warn("Save blocked for team {} - load state={}", teamId, state);
@@ -481,9 +465,9 @@ public class MySQLBackend {
 
     private SaveResult saveInitialTeamDataIfAbsent(UUID teamId, CompoundTag tag) {
         if (!isAvailable()) return null;
-        TeamLoadState state = getTeamLoadState(teamId);
-        if (state == TeamLoadState.LOADED) return saveTeamData(teamId, tag);
-        if (state != TeamLoadState.UNKNOWN && state != TeamLoadState.NEW) {
+        TeamLoadStateRegistry.TeamLoadState state = TeamLoadStateRegistry.getTeamLoadState(teamId);
+        if (state == TeamLoadStateRegistry.TeamLoadState.LOADED) return saveTeamData(teamId, tag);
+        if (state != TeamLoadStateRegistry.TeamLoadState.UNKNOWN && state != TeamLoadStateRegistry.TeamLoadState.NEW) {
             FTBQuestsSync.LOGGER.warn("Save blocked for team {} - load state={}", teamId, state);
             return null;
         }
@@ -501,7 +485,7 @@ public class MySQLBackend {
             // the race, so we block and leave the load state for a proper reload.
             SaveResult existing = loadMeta(conn, teamId, hash);
             if (existing.revision > 0) {
-                setTeamLoadState(teamId, TeamLoadState.UNKNOWN);
+                TeamLoadStateRegistry.setTeamLoadState(teamId, TeamLoadStateRegistry.TeamLoadState.UNKNOWN);
                 FTBQuestsSync.LOGGER.warn(
                         "Save blocked for team {} - DB row already exists rev={}; needs reload before write",
                         teamId, existing.revision);
@@ -515,14 +499,14 @@ public class MySQLBackend {
                 ps.executeUpdate();
             } catch (java.sql.SQLException e) {
                 if (e.getErrorCode() == 1062) {
-                    setTeamLoadState(teamId, TeamLoadState.UNKNOWN);
+                    TeamLoadStateRegistry.setTeamLoadState(teamId, TeamLoadStateRegistry.TeamLoadState.UNKNOWN);
                     FTBQuestsSync.LOGGER.warn(
                             "Initial save lost race for team {} - peer wrote first; blocking until reload", teamId);
                     return null;
                 }
                 throw e;
             }
-            setTeamLoadState(teamId, TeamLoadState.LOADED);
+            TeamLoadStateRegistry.setTeamLoadState(teamId, TeamLoadStateRegistry.TeamLoadState.LOADED);
             String hashHex = HexFormat.of().formatHex(hash);
             FTBQuestsSync.LOGGER.info(
                     "Saved FTB team data to MySQL (initial): team={} bytes={} revision=1 hash={} serverId={}",

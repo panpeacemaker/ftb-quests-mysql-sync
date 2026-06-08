@@ -134,7 +134,7 @@ public final class ChunkSync {
 
     private boolean causedByTeamMaterializer(Set<UUID> teamIds) {
         for (UUID teamId : teamIds) {
-            if (MySQLBackend.getTeamLoadState(teamId) == MySQLBackend.TeamLoadState.LOADING) return true;
+            if (TeamLoadStateRegistry.getTeamLoadState(teamId) == TeamLoadStateRegistry.TeamLoadState.LOADING) return true;
         }
         return false;
     }
