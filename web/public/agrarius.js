@@ -546,6 +546,7 @@ async function resetScope(mode, options) {
     includeRanks,
     immediate: state.immediate,
     resetKind,
+    confirm: true,
   };
   if (mode === 'CHAPTER' || mode === 'QUEST') body.chapterId = chapter.id;
   if (mode === 'QUEST') body.questId = quest.id;

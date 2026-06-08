@@ -8,6 +8,38 @@ const blob = require('./nbt');
 const questbook = require('./questbook');
 
 const router = express.Router();
+
+router.use((req, res, next) => {
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  next();
+});
+
+function makeRateLimiter(windowMs, max) {
+  const store = new Map();
+  setInterval(() => {
+    const cutoff = Date.now() - windowMs;
+    for (const [ip, hits] of store) {
+      if (hits[hits.length - 1] < cutoff) store.delete(ip);
+    }
+  }, windowMs).unref?.();
+  return (req, res, next) => {
+    const ip = req.ip || req.connection?.remoteAddress || 'unknown';
+    const now = Date.now();
+    const hits = store.get(ip) || [];
+    const recent = hits.filter((t) => t > now - windowMs);
+    if (recent.length >= max) {
+      return res.status(429).json({ error: 'Too many requests' });
+    }
+    recent.push(now);
+    store.set(ip, recent);
+    next();
+  };
+}
+
+const loginLimiter = makeRateLimiter(60_000, 5);
+const resetLimiter = makeRateLimiter(60_000, 30);
 const WOT_LOGIN = process.env.WOT_LOGIN_URL || 'http://127.0.0.1:3005/WOT-zalohy/api/login';
 const WOT_ME = process.env.WOT_ME_URL || 'http://127.0.0.1:3005/WOT-zalohy/api/me';
 const AGRARIUS_ROLES = new Set(String(process.env.AGRARIUS_ROLES || 'admin').split(',').map((s) => s.trim()).filter(Boolean));
@@ -20,10 +52,12 @@ function canUseAgrarius(user) {
 }
 
 function normalizeWotCookie(cookie) {
+  const isSecure = String(process.env.AGR_COOKIE_SECURE || '').toLowerCase() === 'true'
+    || String(process.env.NODE_ENV || '').toLowerCase() === 'production';
   return String(cookie || '')
     .replace(/;\s*Path=[^;]*/i, '')
     .replace(/;\s*SameSite=[^;]*/i, '')
-    .replace(/;\s*Secure\b/i, '') + '; Path=/; SameSite=Strict; Secure';
+    .replace(/;\s*Secure\b/i, '') + '; Path=/; SameSite=Strict' + (isSecure ? '; Secure' : '');
 }
 
 async function requireWotAgrarius(req, res) {
@@ -46,9 +80,13 @@ function requireCsrfHeader(req, res) {
   return true;
 }
 
-router.post('/api/agrarius/login', async (req, res) => {
+router.post('/api/agrarius/login', loginLimiter, async (req, res) => {
   try {
-    const r = await axios.post(WOT_LOGIN, req.body || {}, {
+    const { username, password } = req.body || {};
+    if (typeof username !== 'string' || typeof password !== 'string' || !username || !password || username.length > 256 || password.length > 256) {
+      return res.status(400).json({ error: 'Invalid credentials' });
+    }
+    const r = await axios.post(WOT_LOGIN, { username, password }, {
       headers: { 'content-type': 'application/json' },
       timeout: 5000,
       validateStatus: () => true,
@@ -62,7 +100,8 @@ router.post('/api/agrarius/login', async (req, res) => {
     if (cookies) res.setHeader('Set-Cookie', cookies.map(normalizeWotCookie));
     return res.json({ ok: true, username: r.data && r.data.username, role: r.data && r.data.role });
   } catch (e) {
-    return res.status(502).json({ error: 'Auth server nedostupný: ' + e.message });
+    console.error('[agrarius] login upstream error:', e);
+    return res.status(502).json({ error: 'Auth server unavailable' });
   }
 });
 
@@ -83,20 +122,20 @@ router.get('/api/agrarius/status', async (req, res) => {
   if (!(await requireWotAgrarius(req, res))) return;
   const p = await db.ping();
   let tables = [];
-  try { tables = (await db.query('SHOW TABLES')).map((r) => Object.values(r)[0]); } catch (e) { p.tablesError = e.message; }
+  try { tables = (await db.query('SHOW TABLES')).map((r) => Object.values(r)[0]); } catch (e) { console.error('[agrarius] show tables failed:', e); p.tablesError = 'Database query failed'; }
   res.json({ env: 'test', ...p, tables });
 });
 
 router.get('/api/agrarius/questbook', async (req, res) => {
   if (!(await requireWotAgrarius(req, res))) return;
   try { res.json(await questbook.getQuestbook(false)); }
-  catch (e) { res.status(502).json({ error: 'questbook load failed: ' + e.message }); }
+  catch (e) { console.error('[agrarius] questbook load failed:', e); res.status(502).json({ error: 'questbook load failed' }); }
 });
 
 router.post('/api/agrarius/questbook/refresh', async (req, res) => {
   if (!(await requireWotAgrarius(req, res))) return;
   try { res.json(await questbook.getQuestbook(true)); }
-  catch (e) { res.status(502).json({ error: 'refresh failed: ' + e.message }); }
+  catch (e) { console.error('[agrarius] questbook refresh failed:', e); res.status(502).json({ error: 'refresh failed' }); }
 });
 
 router.get('/api/agrarius/targets', async (req, res) => {
@@ -113,7 +152,7 @@ router.get('/api/agrarius/targets', async (req, res) => {
       'SELECT team_id teamId, team_name name, owner_uuid owner FROM ftbquests_team_info WHERE deleted=0 AND team_name LIKE ? ' +
       'ORDER BY team_name LIMIT ?', [q, limit]);
     res.json({ players, teams, query: raw, limit });
-  } catch (e) { res.status(502).json({ error: e.message }); }
+  } catch (e) { console.error('[agrarius] targets query failed:', e); res.status(502).json({ error: 'Database query failed' }); }
 });
 
 async function resolveTeams(scope, targetId) {
@@ -132,10 +171,13 @@ function resetFlags(resetKind, includeRanks) {
   return { stripProgress: true, deleteRewards: true, deleteRanks: !!includeRanks };
 }
 
-router.post('/api/agrarius/reset', async (req, res) => {
+router.post('/api/agrarius/reset', resetLimiter, async (req, res) => {
   if (!requireCsrfHeader(req, res)) return;
   const who = await requireWotAgrarius(req, res);
   if (!who) return;
+  if (req.body && req.body.confirm !== true) {
+    return res.status(400).json({ error: 'Confirm required' });
+  }
   const { scope, targetId, mode, chapterId, questId, includeRanks, immediate } = req.body || {};
   const resetKind = String((req.body || {}).resetKind || 'ALL').toUpperCase();
   if (!['PLAYER', 'TEAM'].includes(scope) || !targetId || !['FULL', 'CHAPTER', 'QUEST'].includes(mode)) {
@@ -215,14 +257,15 @@ router.post('/api/agrarius/reset', async (req, res) => {
   } catch (e) {
     await conn.rollback();
     conn.release();
-    return res.status(500).json({ error: 'reset tx failed: ' + e.message });
+    console.error('[agrarius] reset tx failed:', e);
+    return res.status(500).json({ error: 'Reset transaction failed' });
   }
   conn.release();
 
   if (immediate) {
     for (const teamId of teamIds) {
       try { await db.publishReset(teamId, summary._lastRevision || 0, summary._lastHash || '', { reason: 'reset', forceReplace: true }); summary.published.push(teamId); }
-      catch (e) { summary.publishError = e.message; }
+      catch (e) { console.error('[agrarius] publish reset failed:', e); summary.publishError = 'Publish failed'; }
     }
   }
   try {
@@ -230,7 +273,7 @@ router.post('/api/agrarius/reset', async (req, res) => {
       'INSERT INTO ftbquests_reset_audit (actor,scope,target_id,mode,chapter_id,quest_id,include_rewards,include_ranks,immediate,summary) VALUES (?,?,?,?,?,?,?,?,?,?)',
       [who.username, scope, String(targetId), mode, chapterId || null, questId || null,
         flags.deleteRewards ? 1 : 0, flags.deleteRanks ? 1 : 0, immediate ? 1 : 0, JSON.stringify(summary)]);
-  } catch (e) { summary.auditError = e.message; }
+  } catch (e) { console.error('[agrarius] audit insert failed:', e); summary.auditError = 'Audit logging failed'; }
   res.json({ ok: true, cleared: summary });
 });
 
@@ -257,13 +300,13 @@ router.get('/api/agrarius/progress', async (req, res) => {
       completed: Array.from(completed),
       started: Array.from(started),
     });
-  } catch (e) { res.status(502).json({ error: e.message }); }
+  } catch (e) { console.error('[agrarius] progress query failed:', e); res.status(502).json({ error: 'Progress query failed' }); }
 });
 
 router.get('/api/agrarius/audit', async (req, res) => {
   if (!(await requireWotAgrarius(req, res))) return;
   try { await ensureAudit(); res.json(await db.query('SELECT * FROM ftbquests_reset_audit ORDER BY id DESC LIMIT 50')); }
-  catch (e) { res.status(502).json({ error: e.message }); }
+  catch (e) { console.error('[agrarius] audit query failed:', e); res.status(502).json({ error: 'Audit query failed' }); }
 });
 
 const PUBLIC = path.join(__dirname, 'public');
@@ -391,10 +434,10 @@ router.get('/api/agrarius/lang', async (req, res) => {
     }
     res.setHeader('Cache-Control', 'public, max-age=60');
     res.json({ chapterKeys, groupKeys, groupById, counts: book.counts || {} });
-  } catch (e) { res.status(502).json({ error: e.message }); }
+  } catch (e) { console.error('[agrarius] lang endpoint failed:', e); res.status(502).json({ error: 'Lang query failed' }); }
 });
 
-router.use('/agrarius', express.static(PUBLIC, { maxAge: 0, setHeaders: (res) => res.setHeader('Cache-Control', 'no-store, must-revalidate') }));
+router.use('/agrarius', express.static(PUBLIC, { dotfiles: 'deny', index: false, maxAge: 0, setHeaders: (res) => res.setHeader('Cache-Control', 'no-store, must-revalidate') }));
 router.get('/agrarius', (req, res) => res.sendFile(path.join(PUBLIC, 'index.html')));
 
 module.exports = router;

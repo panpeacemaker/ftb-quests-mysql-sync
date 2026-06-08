@@ -18,6 +18,18 @@ const REDIS = {
 };
 const REDIS_CHANNEL = process.env.AGR_REDIS_CHANNEL || 'ftbquests:team:updated';
 
+const ALLOW_EMPTY = String(process.env.AGR_ALLOW_EMPTY_PASSWORDS || '') === '1';
+if (!ALLOW_EMPTY) {
+  if (!CFG.password) {
+    console.error('[agrarius] FATAL: AGR_DB_PASS is empty. Set AGR_ALLOW_EMPTY_PASSWORDS=1 to override (dev only).');
+    process.exit(1);
+  }
+  if (!REDIS.password) {
+    console.error('[agrarius] FATAL: AGR_REDIS_PASS is empty. Set AGR_ALLOW_EMPTY_PASSWORDS=1 to override (dev only).');
+    process.exit(1);
+  }
+}
+
 let _pool = null;
 let _redis = null;
 
