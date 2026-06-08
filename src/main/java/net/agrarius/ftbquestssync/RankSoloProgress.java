@@ -154,17 +154,6 @@ public final class RankSoloProgress {
         return true;
     }
 
-    public static long questIdForTask(long taskId) {
-        return taskToQuestMap.getOrDefault(taskId, 0L);
-    }
-
-    public static long taskIdForQuest(long questId) {
-        for (Map.Entry<Long, Long> e : taskToQuestMap.entrySet()) {
-            if (e.getValue() == questId) return e.getKey();
-        }
-        return 0L;
-    }
-
     public static void stripRankSharedProgress(CompoundTag tag) {
         if (tag == null || !initialized) return;
         removeKeys(tag, "task_progress", soloTaskIds);

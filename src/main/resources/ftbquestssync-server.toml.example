@@ -23,8 +23,7 @@ serverId = "server1"
 syncQuests = true
 syncTeams = false
 sendFullTeamData = true
-sendDeltaPackets = false
-conflictPolicy = "reload_remote"
+# sendDeltaPackets and conflictPolicy are removed/inert (ignored if present)
 
 [policy]
 # blacklist = listed chapters/quests/tasks stay per-player; everything else team-shared

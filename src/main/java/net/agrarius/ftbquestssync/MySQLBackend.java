@@ -94,11 +94,6 @@ public class MySQLBackend {
             + "INDEX idx_team_reward (team_id, reward_id)"
             + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-    private static final String SQL_TRY_CLAIM =
-            "INSERT IGNORE INTO ftbquests_reward_claims "
-            + "(team_id, reward_id, claim_uuid, claimed_at_ms, granted_by_server) "
-            + "VALUES (?, ?, ?, ?, ?)";
-
     private static final String SQL_CREATE_CLAIMS_SCOPED =
             "CREATE TABLE IF NOT EXISTS ftbquests_reward_claim_scopes ("
             + "scope_type VARCHAR(16) NOT NULL,"
