@@ -135,9 +135,10 @@ export JAVA_HOME=/usr/lib/jvm/java-17-openjdk   # MUST be JDK 17; system default
 # output: build/libs/ftb-quests-mysql-sync-1.1.9.jar
 sha256sum build/libs/ftb-quests-mysql-sync-1.1.9.jar   # record; must match on agr1 + agr2
 ```
-Reference build (this handoff, `./gradlew clean build`, JDK 17.0.19):
-`245b125fa1795983e8a25833c0bb78a095b7d6d57c05a1e29fe1db44a30e410d  ftb-quests-mysql-sync-1.1.9.jar`
-(NOTE: `build` produces the dev jar; `reobfShadowJar` produces the deploy jar — recompute SHA for the deploy artifact and pin it at release.)
+RELEASE artifact (v1.1.9, `./gradlew clean reobfShadowJar`, JDK 17.0.19 — this is the jar to DEPLOY):
+`2d337f490b486125789975353fb912fed5443a74d39940de66848c813fd6efd6  ftb-quests-mysql-sync-1.1.9.jar`
+Published at GitHub release `v1.1.9`. Deploy the SAME jar to agr1 + agr2; verify identical SHA256.
+(Dev jar from `./gradlew clean build` differs intentionally: `245b125f…410d`.)
 Web install (reproducible):
 ```
 cd web && npm ci    # requires committed package-lock.json
