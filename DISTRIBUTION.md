@@ -80,8 +80,7 @@ serverId = "agr1"
 syncQuests = true
 syncTeams = true
 sendFullTeamData = true
-sendDeltaPackets = false
-conflictPolicy = "reload_remote"
+# sendDeltaPackets and conflictPolicy are removed/inert (ignored if present)
 
 [policy]
 mode = "blacklist"

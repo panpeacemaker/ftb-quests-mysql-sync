@@ -7,7 +7,7 @@ issueTrackerURL="https://github.com/panpeacemaker/ftb-quests-mysql-sync/issues"
 modId="ftbquestssync"
 version="${file.jarVersion}"
 displayName="FTB Quests MySQL Sync"
-authors="https://github.com/panpeacemaker, sisyphus"
+authors="https://github.com/panpeacemaker"
 description='''
 MySQL synchronization for FTB Quests team data across multiple servers.
 Enables shared quest progress for multi-server setups.

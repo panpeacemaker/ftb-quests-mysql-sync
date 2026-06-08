@@ -44,8 +44,6 @@ public final class Config {
     public static String chunkCanonicalServerId = "agr1";
     public static boolean chunkForceLoadSync = true;
     public static boolean sendFullTeamData = true;
-    public static boolean sendDeltaPackets = false;
-    public static String conflictPolicy = "reload_remote";
     public static String policyMode = "blacklist";
     public static Set<Long> soloChapterIds = Set.of(0x3622ED01311E6763L, 0x67F6F5055518AC4FL);
     public static Set<Long> repeatableSoloChapterIds = Set.of();
@@ -92,8 +90,6 @@ public final class Config {
         chunkCanonicalServerId = prop("ftbquestssync.chunkCanonicalServerId", toml.getOrDefault("chunkCanonicalServerId", chunkCanonicalServerId)).trim();
         chunkForceLoadSync = boolProp("ftbquestssync.chunkForceLoadSync", toml.getOrDefault("chunkForceLoadSync", String.valueOf(chunkForceLoadSync)), chunkForceLoadSync);
         sendFullTeamData = boolProp("ftbquestssync.sendFullTeamData", toml.getOrDefault("sendFullTeamData", String.valueOf(sendFullTeamData)), sendFullTeamData);
-        sendDeltaPackets = boolProp("ftbquestssync.sendDeltaPackets", toml.getOrDefault("sendDeltaPackets", String.valueOf(sendDeltaPackets)), sendDeltaPackets);
-        conflictPolicy = prop("ftbquestssync.conflictPolicy", toml.getOrDefault("conflictPolicy", conflictPolicy));
         policyMode = prop("ftbquestssync.policy.mode", toml.getOrDefault("mode", policyMode)).trim().toLowerCase();
         if (!"blacklist".equals(policyMode) && !"whitelist".equals(policyMode)) {
             FTBQuestsSync.LOGGER.warn("Invalid policy mode '{}', using blacklist", policyMode);
@@ -119,11 +115,11 @@ public final class Config {
         FTBQuestsSync.LOGGER.info(
                 "Config loaded: mysql={}:{} db={} user={} passwordSet={} mysqlSsl={} redis={}:{} redisPasswordSet={} serverId={} "
                 + "syncQuests={} syncTeams={} syncChunks={} chunkSeedOnStart={} chunkCanonicalServerId={} chunkForceLoadSync={} "
-                + "sendFullTeamData={} sendDeltaPackets={} conflictPolicy={}",
+                + "sendFullTeamData={}",
                 mysqlHost, mysqlPort, mysqlDatabase, mysqlUsername,
                 !mysqlPassword.isBlank(), mysqlUseSsl, redisHost, redisPort, !redisPassword.isBlank(), serverId,
                 syncQuests, syncTeams, syncChunks, chunkSeedOnStart, chunkCanonicalServerId, chunkForceLoadSync,
-                sendFullTeamData, sendDeltaPackets, conflictPolicy);
+                sendFullTeamData);
         FTBQuestsSync.LOGGER.info(
                 "Policy loaded: mode={} soloChapterIds={} repeatableSoloChapterIds={} soloQuestIds={} soloTaskIds={} syncSoloProgressPerPlayer={} soloRewardsPerPlayer={} teamRewardsDedupGlobal={} rewardFailClosed={}",
                 policyMode, soloChapterIds, repeatableSoloChapterIds, soloQuestIds, soloTaskIds,

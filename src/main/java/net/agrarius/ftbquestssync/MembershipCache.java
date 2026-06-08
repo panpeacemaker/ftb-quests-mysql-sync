@@ -26,11 +26,6 @@ public final class MembershipCache {
         playerToTeam.put(playerUuid, teamId);
     }
 
-    public static Optional<UUID> getTeam(UUID playerUuid) {
-        if (playerUuid == null) return Optional.empty();
-        return Optional.ofNullable(playerToTeam.get(playerUuid));
-    }
-
     /**
      * Resolve the canonical team for a player, preferring the cached DB value
      * and falling back to the supplied local team id on a miss.
@@ -40,8 +35,4 @@ public final class MembershipCache {
         return cached != null ? cached : localTeamId;
     }
 
-    public static void remove(UUID playerUuid) {
-        if (playerUuid == null) return;
-        playerToTeam.remove(playerUuid);
-    }
 }

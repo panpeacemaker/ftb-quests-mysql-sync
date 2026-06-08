@@ -11,6 +11,7 @@
     "axios": "^1.6.0",
     "express": "^4.19.0",
     "ioredis": "^5.3.2",
-    "mysql2": "^3.9.0"
+    "mysql2": "^3.9.0",
+    "prismarine-nbt": "^2.5.0"
   }
 }

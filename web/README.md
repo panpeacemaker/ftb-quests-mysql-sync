@@ -38,6 +38,8 @@ app.listen(3000);
 
 Or run as standalone with a thin wrapper script (not included — write one).
 
+> **Proxy note:** If the app sits behind a reverse proxy (nginx, Velocity, etc.), the host Express app must call `app.set('trust proxy', true)` (or a trusted proxy list) so `req.ip` reflects the real client IP. Without this, rate-limiting and any IP-based gates will see the proxy's address instead.
+
 ## Auth model (heads up)
 
 The viewer ships with **cookie-forwarding auth** — it expects a sibling Express service that exposes:
