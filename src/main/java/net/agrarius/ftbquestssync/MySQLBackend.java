@@ -225,6 +225,9 @@ public class MySQLBackend {
     private static final String SQL_SELECT_INVITES_FOR_PLAYER =
             "SELECT team_id, invited_uuid, inviter_uuid FROM ftbquests_team_invites WHERE invited_uuid=?";
 
+    private static final String SQL_SELECT_MIGRATED_TEAM_IDS =
+            "SELECT team_id FROM ftbquests_teamdata WHERE server_id = ?";
+
     private ConnectionProvider connectionProvider;
     private volatile boolean initialized;
     private final ExecutorService dbExecutor = new ThreadPoolExecutor(
@@ -377,6 +380,44 @@ public class MySQLBackend {
                     "tryClaimReward failed for team={} reward={} scopeType={} cycle={} - rewardFailClosed={}",
                     teamId, rewardId, scopeType, cycle, Config.rewardFailClosed, e);
             return new ScopedClaimResult(!Config.rewardFailClosed, false);
+        }
+    }
+
+    public java.util.List<UUID> selectMigratedTeamIds(String serverIdTag) {
+        java.util.List<UUID> ids = new java.util.ArrayList<>();
+        if (!isAvailable()) return ids;
+        try (Connection conn = connectionProvider.getConnection();
+             PreparedStatement ps = conn.prepareStatement(SQL_SELECT_MIGRATED_TEAM_IDS)) {
+            ps.setString(1, serverIdTag);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    try {
+                        ids.add(UUID.fromString(rs.getString(1)));
+                    } catch (IllegalArgumentException ignored) { }
+                }
+            }
+        } catch (Exception e) {
+            FTBQuestsSync.LOGGER.warn("selectMigratedTeamIds failed for serverIdTag={}", serverIdTag, e);
+        }
+        return ids;
+    }
+
+    public boolean seedClaimScope(UUID teamId, long rewardId, String scopeType, UUID scopeUuid,
+                                  long cycle, long claimedAtMs, String serverIdTag) {
+        if (!isAvailable()) return false;
+        try (Connection conn = connectionProvider.getConnection();
+             PreparedStatement ps = conn.prepareStatement(SQL_TRY_CLAIM_SCOPED)) {
+            ps.setString(1, scopeType);
+            ps.setString(2, scopeUuid.toString());
+            ps.setLong(3, rewardId);
+            ps.setLong(4, cycle);
+            ps.setString(5, teamId.toString());
+            ps.setLong(6, claimedAtMs);
+            ps.setString(7, serverIdTag);
+            return ps.executeUpdate() > 0;
+        } catch (Exception e) {
+            FTBQuestsSync.LOGGER.warn("seedClaimScope failed team={} reward={} scope={}", teamId, rewardId, scopeType, e);
+            return false;
         }
     }
 
