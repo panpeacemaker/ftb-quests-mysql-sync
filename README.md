@@ -244,11 +244,40 @@ Not guaranteed: the final milliseconds before hard poweroff if async DB write di
 
 A one-shot importer that pulls historical per-player quest progress
 from a legacy store (per-player ZIPs) into the mod's own
-`ftbquests_teamdata` / `ftbquests_team_info` / `ftbquests_team_membership`
+`ftbquests_teamdata` / `ftbquests_team_info` / `ftbquests_team_membership` /
+`ftbquests_rank_progress` / `ftbquests_reward_claim_scopes`
 tables. Run this **once** when first deploying the mod onto a server
 that already has quest progress stored elsewhere. After the import
 completes, the rest of the mod's live sync machinery takes over from
 the database as the authoritative source.
+
+> [!WARNING]
+> **`usercache.json` MUST contain every player before you migrate.**
+>
+> The legacy data is keyed by each player's *old offline* UUID, but the live
+> server uses the player's *current online* UUID. The migrator bridges the two
+> by matching the player **name** in `/opt/agrarius/usercache.json`. Any player
+> **not present** in that file is **not remapped** — their quest data, ranks and
+> reward claims are written under the stale offline UUID and **that player will
+> not see any of it** until they reappear in the usercache and the migration is
+> re-run for them.
+>
+> Before migrating: make sure `usercache.json` on the migrating server holds an
+> entry for **all** players you want to migrate. After migrating, check the
+> summary line in the log:
+> `===== MIGRATION SUMMARY ===== players=… uuidMissedNoUsercache=0 …`.
+> **`uuidMissedNoUsercache` must be `0`.** If it is non-zero, the log lists each
+> missed player by name — refresh the usercache and re-run the migration.
+
+> [!IMPORTANT]
+> **What the migration now transfers (verified end-to-end):**
+> - Quest progress (started / completed / task progress) → `ftbquests_teamdata`
+> - Per-player **solo / rank / QoL** progress → `ftbquests_rank_progress`
+>   (the runtime strips this from the team blob, so it must be migrated separately)
+> - **Reward claims** → `ftbquests_reward_claim_scopes` (cross-server dedup, so an
+>   already-claimed reward cannot be claimed again after migration)
+> - Team-reward claim keys are normalised to `NIL_UUID` so the **client GUI** shows
+>   migrated rewards as already claimed instead of offering the claim button.
 
 ### At a glance
 
@@ -297,6 +326,7 @@ Before triggering the migration, the operator must have:
 | 3 | The **legacy per-player data** present in Redis or in the source MariaDB | The migrator reads from there | For Redis: `redis-cli -h <host> KEYS '<your-prefix>*' \| wc -l`; for MariaDB: `SELECT COUNT(DISTINCT id_player) FROM core_player_data` |
 | 4 | Permission to **read** the source side and **write** to the target side | The migrator is read-only on the source, write-only on the target | Source: `SELECT` on the relevant tables; target: the mod's existing `[mysql]` user already has full DML |
 | 5 | The mod JAR (1.2.0 or later) on **both** server peers | `ServerStartedEvent` fires on every boot | `./gradlew build` then copy `build/libs/ftb-quests-mysql-sync-1.2.0.jar` to `/opt/agrarius/mods/` |
+| 6 | **`usercache.json` on the migrating server contains an entry for every player to migrate** ⚠️ | The migrator remaps each player's legacy offline UUID to their current online UUID **by name** via this file. Players missing here keep the stale offline UUID and **will not see their migrated data**. | `python3 -c "import json;print(len(json.load(open('/opt/agrarius/usercache.json'))))"` — compare against the player count from row 3. After migrating, confirm `uuidMissedNoUsercache=0` in the summary log line. |
 
 ### Configuration reference
 
@@ -353,9 +383,14 @@ redis-cli -h <REDIS_HOST> -n <DB> KEYS '<your-prefix>*' | wc -l
 # or
 mysql -h <SOURCE_HOST> -u <USER> -p -e \
   "SELECT COUNT(DISTINCT id_player) FROM <DB>.core_player_data;"
+
+# Check usercache.json covers every player (count must be >= player count above)
+python3 -c "import json;print('usercache entries:', len(json.load(open('/opt/agrarius/usercache.json'))))"
 ```
 
 If any of these fails, fix it first; the migration is the last step.
+**In particular, do not migrate until `usercache.json` covers every player**
+(see the warning at the top of this section).
 
 #### Step 1 — write the toml
 
@@ -435,10 +470,20 @@ side is wired correctly.
    - `Migration upsert: player=<uuid> teamId=<teamId> party=<bool>
      partyName=<name> bytes=<N> revision=1 hash=<sha>`
      — one per imported player
-4. The final summary line:
+4. The final summary lines:
    `Legacy quest migration done: playersSeen=<N> upserts=<M>
-   skippedNoSnbt=<K> failed=<F> elapsedMs=<T> dryRun=false`
-   - `upserts` should equal the number of real players.
+   remappedUuids=<R> remapMissed=<X> soloBindings=<B> rankRows=<RR>
+   claimScopes=<CS> skippedNoSnbt=<K> failed=<F> … dryRun=false`
+   followed by
+   `===== MIGRATION SUMMARY ===== players=<N> migrated=<M>
+   uuidRemapped=<R> uuidMissedNoUsercache=<X> rankRows=<RR>
+   claimScopes=<CS> failed=<F>`
+   - `migrated` should equal the number of real players.
+   - **`uuidMissedNoUsercache` must be `0`** — if non-zero, those players
+     were not in `usercache.json`; the log names each one. Refresh the
+     usercache and re-run for them.
+   - `rankRows` / `claimScopes` > 0 confirm ranks and reward-claim dedup
+     were migrated.
    - `failed` should be `0`. If non-zero, the marker is **not**
      written and a restart will retry the failures.
 
