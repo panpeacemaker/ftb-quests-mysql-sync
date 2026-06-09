@@ -17,14 +17,34 @@ import java.util.UUID;
  * exports. Schema (default):
  *
  *   <playersTable>(<idColumn>, <uuidColumn>, username, ...)
- *   <dataTable>(<idPlayerColumn>, <idColumn>, <dataColumn> LONGBLOB,
- *               <createdAtColumn>, backup_type, server)
+ *   <dataTable>(<idPlayerColumn>, <idColumn>, <dataColumn> LONGBLOB, <createdAtColumn>, ...)
  *
- * For each player the row with the latest {@code created_at} is used. The
- * actual quest export inside the ZIP is identified by the {@code quests.snbt}
- * entry (see {@link ZipSnbtExtractor}).
+ * For each player the row with the latest {@code created_at} is used
+ * (no backup_type/server filter is applied — the latest row wins; if
+ * the source schema also has unrelated rows, filter with a dedicated
+ * source DB view or set the {@code idPlayerColumn} accordingly). The
+ * actual quest export inside the ZIP is identified by the
+ * {@code quests.snbt} entry (see {@link ZipSnbtExtractor}).
  */
 public final class MysqlBlobSource implements PlayerBlobSource {
+
+    /**
+     * Allow-list for SQL identifiers (table and column names) supplied via
+     * configuration. The migrator concatenates them into the SELECT, so a
+     * permissive value (whitespace, quotes, semicolons) would let a bad
+     * config string alter the query. A bad value is rejected at construction
+     * time so the operator sees the failure at startup, not on first use.
+     */
+    private static final java.util.regex.Pattern SQL_IDENT =
+            java.util.regex.Pattern.compile("^[A-Za-z_][A-Za-z0-9_]*$");
+
+    private static String requireIdent(String value, String label) {
+        if (value == null || !SQL_IDENT.matcher(value).matches()) {
+            throw new IllegalArgumentException("Migration source MySQL " + label
+                    + " is not a valid SQL identifier: " + value);
+        }
+        return value;
+    }
 
     private final String jdbcUrl;
     private final String user;
@@ -59,13 +79,13 @@ public final class MysqlBlobSource implements PlayerBlobSource {
                 + "?useUnicode=true&characterEncoding=utf8";
         this.user = user;
         this.password = password;
-        this.playersTable = playersTable;
-        this.dataTable = dataTable;
-        this.uuidColumn = uuidColumn;
-        this.idColumn = idColumn;
-        this.idPlayerColumn = idPlayerColumn;
-        this.dataColumn = dataColumn;
-        this.createdAtColumn = createdAtColumn;
+        this.playersTable = requireIdent(playersTable, "playersTable");
+        this.dataTable = requireIdent(dataTable, "dataTable");
+        this.uuidColumn = requireIdent(uuidColumn, "uuidColumn");
+        this.idColumn = requireIdent(idColumn, "idColumn");
+        this.idPlayerColumn = requireIdent(idPlayerColumn, "idPlayerColumn");
+        this.dataColumn = requireIdent(dataColumn, "dataColumn");
+        this.createdAtColumn = requireIdent(createdAtColumn, "createdAtColumn");
     }
 
     @Override

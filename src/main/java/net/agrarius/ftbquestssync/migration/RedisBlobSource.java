@@ -2,76 +2,81 @@ package net.agrarius.ftbquestssync.migration;
 
 import net.agrarius.ftbquestssync.Config;
 import net.agrarius.ftbquestssync.FTBQuestsSync;
+import net.agrarius.ftbquestssync.RedisSync;
 import redis.clients.jedis.Jedis;
-import redis.clients.jedis.JedisPool;
-import redis.clients.jedis.JedisPoolConfig;
+import redis.clients.jedis.params.ScanParams;
+import redis.clients.jedis.resps.ScanResult;
 
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 
 /**
  * Reads legacy player blobs from Redis. Key shape (default):
  * {@code <keyPrefix><uuid-with-or-without-dashes>}.
  *
- * The key suffix is parsed as a UUID; anything that does not parse is
- * skipped (logged at debug and ignored).
+ * Uses the mod's shared {@link RedisSync#getInstance() pool} to avoid
+ * holding a second long-lived connection. Key listing is done with
+ * {@code SCAN} (cursor-based) rather than {@code KEYS} so a large legacy
+ * data set does not block Redis. Per-blob size is bounded by
+ * {@code migrationMaxBlobBytes} so a single malformed entry cannot
+ * exhaust heap.
  */
 public final class RedisBlobSource implements PlayerBlobSource {
 
-    private final String host;
-    private final int port;
-    private final String password;
     private final int db;
     private final String prefix;
+    private final int maxBlobBytes;
 
     public RedisBlobSource() {
-        this(Config.getRedisHost(), Config.getRedisPort(), Config.getRedisPassword(),
-                Config.migrationRedisDb, Config.migrationRedisKeyPrefix);
+        this(Config.migrationRedisDb, Config.migrationRedisKeyPrefix, Config.migrationMaxBlobBytes);
     }
 
-    public RedisBlobSource(String host, int port, String password, int db, String prefix) {
-        this.host = host;
-        this.port = port;
-        this.password = password;
+    public RedisBlobSource(int db, String prefix, int maxBlobBytes) {
         this.db = db;
-        this.prefix = prefix;
+        this.prefix = prefix == null ? "" : prefix;
+        this.maxBlobBytes = maxBlobBytes;
     }
 
     @Override
     public Map<UUID, byte[]> loadAll() throws Exception {
         Map<UUID, byte[]> out = new HashMap<>();
-        JedisPoolConfig poolConfig = new JedisPoolConfig();
-        poolConfig.setMaxTotal(2);
-        poolConfig.setMaxIdle(1);
-        poolConfig.setMaxWait(java.time.Duration.ofSeconds(5));
-        try (JedisPool pool = new JedisPool(poolConfig, host, port, 5000);
-             Jedis jedis = pool.getResource()) {
-            if (password != null && !password.isBlank()) {
-                jedis.auth(password);
-            }
+        // Use the mod's existing pool; if Redis was never initialised we
+        // cannot bootstrap from it and abort with a clear error.
+        redis.clients.jedis.JedisPool pool = RedisSync.getInstance().getPool();
+        try (Jedis jedis = pool.getResource()) {
             jedis.select(db);
-            Set<String> keys = new LinkedHashSet<>(jedis.keys(prefix + "*"));
-            for (String key : keys) {
-                String suffix = key.substring(prefix.length());
-                UUID uuid = parseUuid(suffix);
-                if (uuid == null) {
-                    FTBQuestsSync.LOGGER.debug("Migration: skipping non-UUID Redis key {}", key);
-                    continue;
+            ScanParams params = new ScanParams().match(prefix + "*").count(256);
+            String cursor = "0";
+            do {
+                ScanResult<String> scan = jedis.scan(cursor, params);
+                for (String key : scan.getResult()) {
+                    String suffix = key.substring(prefix.length());
+                    UUID uuid = parseUuid(suffix);
+                    if (uuid == null) {
+                        FTBQuestsSync.LOGGER.debug("Migration: skipping non-UUID Redis key {}", key);
+                        continue;
+                    }
+                    byte[] raw = jedis.get(key.getBytes(StandardCharsets.UTF_8));
+                    if (raw == null || raw.length == 0) continue;
+                    if (raw.length > maxBlobBytes) {
+                        FTBQuestsSync.LOGGER.warn(
+                                "Migration: skipping oversize Redis blob key={} bytes={} (cap={})",
+                                key, raw.length, maxBlobBytes);
+                        continue;
+                    }
+                    out.putIfAbsent(uuid, raw);
                 }
-                byte[] raw = jedis.get(key.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-                if (raw == null || raw.length == 0) continue;
-                out.put(uuid, raw);
-            }
+                cursor = scan.getCursor();
+            } while (!"0".equals(cursor));
         }
         return out;
     }
 
     @Override
     public String describe() {
-        return "redis://" + host + ":" + port + " db=" + db + " prefix=" + prefix;
+        return "redis db=" + db + " prefix=" + prefix;
     }
 
     private static UUID parseUuid(String s) {

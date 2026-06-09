@@ -66,7 +66,9 @@ public class FTBQuestsSync {
                 RedisSync.getInstance().getServerId());
         serverStarted = true;
         backfillMissingPlayerNames(event.getServer());
-        LegacyQuestMigrator.runIfNeeded();
+        // Auto-migration runs on a background daemon so a slow source (large
+        // Redis dump, slow MariaDB, huge ZIP) never stalls server start.
+        LegacyQuestMigrator.runIfNeededAsync();
     }
 
     private void backfillMissingPlayerNames(net.minecraft.server.MinecraftServer server) {

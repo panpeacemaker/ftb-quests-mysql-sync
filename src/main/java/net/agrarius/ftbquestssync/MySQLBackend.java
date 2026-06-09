@@ -539,9 +539,7 @@ public class MySQLBackend {
     private SaveResult saveTeamDataInternal(UUID teamId, CompoundTag tag, String serverId) {
         if (!isAvailable()) return null;
 
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_UPSERT)) {
-
+        try (Connection conn = connectionProvider.getConnection()) {
             CompoundTag sanitized = tag.copy();
             RankSoloProgress.stripRankSharedProgress(sanitized);
             ByteArrayOutputStream buf = new ByteArrayOutputStream();
@@ -549,18 +547,34 @@ public class MySQLBackend {
             byte[] bytes = buf.toByteArray();
             byte[] hash = MessageDigest.getInstance("SHA-256").digest(bytes);
 
-            ps.setString(1, teamId.toString());
-            ps.setBytes(2, bytes);
-            ps.setBytes(3, hash);
-            ps.setString(4, serverId);
-            int rows = ps.executeUpdate();
+            // Idempotency check: if the existing row's data_hash matches the
+            // payload we are about to write, skip the upsert entirely. This
+            // keeps a re-run, a second peer, or a marker reset from bumping
+            // the revision counter on identical content (which would look
+            // like a live data change to other peers and trigger an
+            // unnecessary Redis reload).
+            SaveResult existing = loadMeta(conn, teamId, hash);
+            if (existing.revision > 0 && java.util.Arrays.equals(existing.hashHex == null ? null
+                    : HexFormat.of().parseHex(existing.hashHex), hash)) {
+                FTBQuestsSync.LOGGER.info(
+                        "Skipped FTB team data write to MySQL (content unchanged): team={} revision={} hash={} serverId={}",
+                        teamId, existing.revision, existing.hashHex, serverId);
+                return existing;
+            }
 
-            SaveResult meta = loadMeta(conn, teamId, hash);
+            try (PreparedStatement ps = conn.prepareStatement(SQL_UPSERT)) {
+                ps.setString(1, teamId.toString());
+                ps.setBytes(2, bytes);
+                ps.setBytes(3, hash);
+                ps.setString(4, serverId);
+                int rows = ps.executeUpdate();
 
-            FTBQuestsSync.LOGGER.info(
-                    "Saved FTB team data to MySQL: team={} bytes={} rows={} revision={} hash={} serverId={}",
-                    teamId, bytes.length, rows, meta.revision, meta.hashHex, serverId);
-            return meta;
+                SaveResult meta = loadMeta(conn, teamId, hash);
+                FTBQuestsSync.LOGGER.info(
+                        "Saved FTB team data to MySQL: team={} bytes={} rows={} revision={} hash={} serverId={}",
+                        teamId, bytes.length, rows, meta.revision, meta.hashHex, serverId);
+                return meta;
+            }
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.error("MySQL save failed for team {}", teamId, e);
             return null;

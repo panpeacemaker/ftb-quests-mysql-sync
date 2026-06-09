@@ -1,8 +1,5 @@
 package net.agrarius.ftbquestssync.migration;
 
-import com.mojang.brigadier.arguments.BoolArgumentType;
-import com.mojang.brigadier.arguments.IntegerArgumentType;
-
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
@@ -55,6 +52,15 @@ public final class MigrateDryRunMain {
 
     private static final Pattern UUID_FIELD = Pattern.compile("\"?uuid\"?\\s*:\\s*\"([0-9a-fA-F]{32})\"");
     private static final Pattern NAME_FIELD = Pattern.compile("\"?name\"?\\s*:\\s*\"([^\"]*)\"");
+    private static final Pattern SQL_IDENT = Pattern.compile("^[A-Za-z_][A-Za-z0-9_]*$");
+
+    private static String requireIdent(String value, String label) {
+        if (value == null || !SQL_IDENT.matcher(value).matches()) {
+            throw new IllegalArgumentException("Migration dry-run SQL " + label
+                    + " is not a valid SQL identifier: " + value);
+        }
+        return value;
+    }
 
     public static void main(String[] args) throws Exception {
         Map<String, String> opts = parseArgs(args);
@@ -114,13 +120,13 @@ public final class MigrateDryRunMain {
         String db = opts.getOrDefault("db-name", "CHANGEME");
         String user = opts.getOrDefault("db-user", "root");
         String pass = opts.getOrDefault("db-pass", "");
-        String playersTable = opts.getOrDefault("players-table", "core_players");
-        String dataTable = opts.getOrDefault("data-table", "core_player_data");
-        String uuidCol = opts.getOrDefault("uuid-column", "uuid");
-        String idCol = opts.getOrDefault("id-column", "id");
-        String idPlayerCol = opts.getOrDefault("id-player-column", "id_player");
-        String dataCol = opts.getOrDefault("data-column", "data");
-        String createdAtCol = opts.getOrDefault("created-at-column", "created_at");
+        String playersTable = requireIdent(opts.getOrDefault("players-table", "core_players"), "players-table");
+        String dataTable = requireIdent(opts.getOrDefault("data-table", "core_player_data"), "data-table");
+        String uuidCol = requireIdent(opts.getOrDefault("uuid-column", "uuid"), "uuid-column");
+        String idCol = requireIdent(opts.getOrDefault("id-column", "id"), "id-column");
+        String idPlayerCol = requireIdent(opts.getOrDefault("id-player-column", "id_player"), "id-player-column");
+        String dataCol = requireIdent(opts.getOrDefault("data-column", "data"), "data-column");
+        String createdAtCol = requireIdent(opts.getOrDefault("created-at-column", "created_at"), "created-at-column");
         int limit = Integer.parseInt(opts.getOrDefault("limit", "0"));
 
         String jdbcUrl = "jdbc:mysql://" + host + ":" + port + "/" + db + "?useUnicode=true&characterEncoding=utf8";
