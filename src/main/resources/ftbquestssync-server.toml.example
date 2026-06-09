@@ -46,12 +46,20 @@ rewardFailClosed = true
 # -Dftbquestssync.migration.runOnBoot=true on the JVM command line.
 [migration]
 runOnBoot = false
-redisKeyPrefix = "stratos:"
+# Full key prefix up to and including the last ':' before the UUID.
+# Live store key shape: stratos:data:player:blob:<uuid>
+redisKeyPrefix = "stratos:data:player:blob:"
 redisDb = 0
 # CHANGEME (optional): parent directory for the per-server marker
 # file. Override when the writable runtime state should not share a
 # filesystem with the toml config (e.g. NFS vs local).
 markerDir = "/opt/agrarius/config"
+# Remap each export's legacy player UUID to the player's CURRENT UUID from
+# usercache.json before writing. Required when the server switched auth
+# (offline name-based UUID -> online/premium UUID), otherwise migrated quest
+# data lands under the old UUID and the player never sees it on login.
+remapUuids = true
+usercachePath = "/opt/agrarius/usercache.json"
 # sourceMysqlHost = "CHANGEME"
 sourceMysqlPort = 3306
 sourceMysqlDatabase = "CHANGEME"
@@ -67,3 +75,9 @@ sourceCreatedAtColumn = "created_at"
 serverIdTag = "migrator"
 maxPlayers = 0
 dryRun = false
+# Hard cap on a single legacy blob (Redis value or MariaDB data column).
+# Raise if a real player export exceeds the cap; lower to harden against
+# zip bombs / malformed sources. Default 16 MiB.
+maxBlobBytes = 16777216
+# Hard cap on the decompressed quests.snbt entry. Default 8 MiB.
+maxSnbtBytes = 8388608

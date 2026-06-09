@@ -7,7 +7,6 @@ import net.agrarius.ftbquestssync.FTBQuestsSync;
 import net.agrarius.ftbquestssync.MySQLBackend;
 import net.minecraft.nbt.CompoundTag;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -18,6 +17,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -28,14 +31,19 @@ import java.util.concurrent.atomic.AtomicInteger;
  * so the rest of this mod's live sync machinery can take over from the first
  * server start.
  *
- * Idempotent: re-runs only touch rows whose contents actually differ
- * (revision+1 on the mod's UPSERT path is the canonical dedup signal).
+ * Idempotent: the underlying {@code saveTeamDataInternal} short-circuits when
+ * the new payload's hash matches the existing row's hash, so a re-run, a
+ * second peer, or a marker reset cannot bump the revision counter on
+ * identical content.
  */
 public final class LegacyQuestMigrator {
 
     private static final Path DEFAULT_MARKER_DIR = Path.of("/opt/agrarius/config");
 
-    private static final java.util.concurrent.atomic.AtomicBoolean RUNNING = new java.util.concurrent.atomic.AtomicBoolean(false);
+    private static final AtomicBoolean RUNNING = new AtomicBoolean(false);
+
+    private static final ExecutorService MIGRATION_EXECUTOR = Executors.newSingleThreadExecutor(
+            new MigrationThreadFactory());
 
     private LegacyQuestMigrator() {
     }
@@ -59,7 +67,13 @@ public final class LegacyQuestMigrator {
         return RUNNING.get();
     }
 
-    public static void runIfNeeded() {
+    /**
+     * Boot-time entry point. Schedules the migration on a background daemon
+     * thread so a slow source (large Redis dump, slow MariaDB, huge ZIP)
+     * never stalls server start. The server thread returns to its caller
+     * before any source read happens.
+     */
+    public static void runIfNeededAsync() {
         if (!Config.migrationRunOnBoot) {
             return;
         }
@@ -80,7 +94,10 @@ public final class LegacyQuestMigrator {
             FTBQuestsSync.LOGGER.warn("Legacy quest migration skipped: target MySQL not available");
             return;
         }
-        runNow();
+        MigrationOptions opts = MigrationOptions.fromConfig();
+        FTBQuestsSync.LOGGER.info("Scheduling auto migration: dryRun={} maxPlayers={} serverIdTag={}",
+                opts.dryRun, opts.maxPlayers, opts.serverIdTag);
+        MIGRATION_EXECUTOR.execute(() -> runNow(opts));
     }
 
     /**
@@ -91,38 +108,39 @@ public final class LegacyQuestMigrator {
      * the operator double-tapping the command) do not race on the
      * marker file or on the {@code Config} statics.
      */
-    public static void runNow() {
+    public static void runNow(MigrationOptions opts) {
         if (!RUNNING.compareAndSet(false, true)) {
             FTBQuestsSync.LOGGER.warn("Legacy quest migration already in progress; ignoring duplicate run");
             return;
         }
         try {
-            runNowInternal();
+            runNowInternal(opts);
         } finally {
             RUNNING.set(false);
         }
     }
 
-    private static void runNowInternal() {
+    private static void runNowInternal(MigrationOptions opts) {
         long t0 = System.currentTimeMillis();
         AtomicInteger players = new AtomicInteger();
         AtomicInteger upserts = new AtomicInteger();
         AtomicInteger skippedNoSnbt = new AtomicInteger();
+        AtomicInteger skippedDuplicate = new AtomicInteger();
         AtomicInteger failed = new AtomicInteger();
 
-        // Snapshot mutable config into locals so a concurrent
-        // /ftbsync migrate invocation cannot change them mid-run.
-        final boolean dryRun = Config.migrationDryRun;
-        final int maxPlayers = Config.migrationMaxPlayers;
-        final String mysqlHost = Config.migrationSourceMysqlHost;
-        final String migrationServerIdTag = Config.migrationServerIdTag;
+        UuidRemapper remapper = opts.remapUuids
+                ? UuidRemapper.load(Path.of(opts.usercachePath))
+                : UuidRemapper.empty();
+        AtomicInteger remapped = new AtomicInteger();
+        AtomicInteger bindings = new AtomicInteger();
 
         List<PlayerBlobSource> sources = new ArrayList<>();
         sources.add(new RedisBlobSource());
-        if (mysqlHost != null && !mysqlHost.isBlank()) {
+        if (opts.mysqlHost != null && !opts.mysqlHost.isBlank()) {
             sources.add(new MysqlBlobSource());
         }
 
+        // First pass: dedup by player UUID, then by teamId.
         Map<UUID, byte[]> blobs = new LinkedHashMap<>();
         for (PlayerBlobSource src : sources) {
             try {
@@ -131,15 +149,20 @@ public final class LegacyQuestMigrator {
                 for (Map.Entry<UUID, byte[]> e : loaded.entrySet()) {
                     blobs.putIfAbsent(e.getKey(), e.getValue());
                 }
-            } catch (Exception ex) {
-                FTBQuestsSync.LOGGER.warn("Migration source {} failed: {}", src.describe(), ex.toString());
+            } catch (Throwable ex) {
+                FTBQuestsSync.LOGGER.warn("Migration source {} failed", src.describe(), ex);
             }
         }
 
-        int cap = maxPlayers > 0 ? Math.min(maxPlayers, blobs.size()) : blobs.size();
+        int cap = opts.maxPlayers > 0 ? Math.min(opts.maxPlayers, blobs.size()) : blobs.size();
         int processed = 0;
+        boolean capReached = false;
+        Map<UUID, byte[]> teamMap = new LinkedHashMap<>();
         for (Map.Entry<UUID, byte[]> entry : blobs.entrySet()) {
-            if (processed >= cap) break;
+            if (processed >= cap) {
+                capReached = true;
+                break;
+            }
             processed++;
             UUID player = entry.getKey();
             byte[] zip = entry.getValue();
@@ -156,21 +179,35 @@ public final class LegacyQuestMigrator {
                     skippedNoSnbt.incrementAndGet();
                     continue;
                 }
-                if (dryRun) {
+                parsed = applyUuidRemap(parsed, remapper, remapped);
+                if (opts.dryRun) {
                     FTBQuestsSync.LOGGER.info(
                             "Migration [DRY-RUN] would upsert player={} teamId={} party={} partyName={} bytes={}",
                             player, parsed.teamId, parsed.isParty, parsed.partyName, snbt.length);
                     upserts.incrementAndGet();
                     continue;
                 }
+                // Multiple players resolving to the same team (party) are
+                // collapsed to a single write; the first parse wins.
+                if (teamMap.putIfAbsent(parsed.teamId, new byte[]{1}) != null) {
+                    skippedDuplicate.incrementAndGet();
+                    FTBQuestsSync.LOGGER.info(
+                            "Migration: player {} resolves to teamId={} already covered by an earlier export; skipping (party member dedup)",
+                            player, parsed.teamId);
+                    continue;
+                }
                 MySQLBackend.SaveResult res = MySQLBackend.getInstance().saveTeamDataMigration(
-                        parsed.teamId, parsed.tag, migrationServerIdTag);
+                        parsed.teamId, parsed.tag, opts.serverIdTag);
                 upserts.incrementAndGet();
                 FTBQuestsSync.LOGGER.info(
                         "Migration upsert: player={} teamId={} party={} partyName={} bytes={} revision={} hash={} serverIdTag={}",
                         player, parsed.teamId, parsed.isParty, parsed.partyName,
-                        snbt.length, res.revision, res.hashHex, migrationServerIdTag);
-            } catch (Exception ex) {
+                        snbt.length, res.revision, res.hashHex, opts.serverIdTag);
+                writeSoloTeamBindings(parsed, bindings);
+            } catch (Throwable ex) {
+                // Catch Throwable (incl. OutOfMemoryError) so a single bad
+                // blob does not kill the daemon migration thread and leave
+                // the rest of the run unprocessed.
                 failed.incrementAndGet();
                 FTBQuestsSync.LOGGER.warn("Migration failed for player {}", player, ex);
             }
@@ -178,24 +215,121 @@ public final class LegacyQuestMigrator {
 
         long ms = System.currentTimeMillis() - t0;
         FTBQuestsSync.LOGGER.info(
-                "Legacy quest migration done: playersSeen={} upserts={} skippedNoSnbt={} failed={} elapsedMs={} dryRun={}",
-                players.get(), upserts.get(), skippedNoSnbt.get(), failed.get(), ms, dryRun);
+                "Legacy quest migration done: playersSeen={} upserts={} remappedUuids={} soloBindings={} skippedNoSnbt={} skippedDuplicate={} failed={} elapsedMs={} dryRun={} capReached={}",
+                players.get(), upserts.get(), remapped.get(), bindings.get(), skippedNoSnbt.get(), skippedDuplicate.get(),
+                failed.get(), ms, opts.dryRun, capReached);
 
-        if (!dryRun && failed.get() == 0 && upserts.get() > 0) {
-            Path marker = markerPath();
-            try {
-                Path parent = marker.getParent();
-                if (parent != null) {
-                    Files.createDirectories(parent);
+        if (!opts.dryRun && failed.get() == 0 && !capReached) {
+            // Only write the marker when the run actually exhausted the
+            // source list. A cap hit (maxPlayers < total) means the next
+            // boot should continue from where we left off.
+            if (upserts.get() == 0 && blobs.isEmpty()) {
+                FTBQuestsSync.LOGGER.warn(
+                        "Migration source returned ZERO blobs for serverId={}; marker NOT written so a later run can pick up the source",
+                        Config.getServerId());
+            } else {
+                Path marker = markerPath();
+                try {
+                    Path parent = marker.getParent();
+                    if (parent != null) {
+                        Files.createDirectories(parent);
+                    }
+                    Files.createFile(marker);
+                    FTBQuestsSync.LOGGER.info("Migration marker written to {}", marker);
+                } catch (IOException ioe) {
+                    FTBQuestsSync.LOGGER.warn("Could not write migration marker {}", marker, ioe);
                 }
-                Files.createFile(marker);
-                FTBQuestsSync.LOGGER.info("Migration marker written to {}", marker);
-            } catch (IOException ioe) {
-                FTBQuestsSync.LOGGER.warn("Could not write migration marker {}", marker, ioe);
             }
-        } else if (!dryRun && failed.get() > 0) {
+        } else if (!opts.dryRun && failed.get() > 0) {
             FTBQuestsSync.LOGGER.warn("Migration finished with {} failure(s); marker NOT written so a restart will retry", failed.get());
+        } else if (!opts.dryRun && capReached) {
+            FTBQuestsSync.LOGGER.warn("Migration hit maxPlayers={} cap (more players remain); marker NOT written so a restart will continue",
+                    opts.maxPlayers);
         }
+    }
+
+    /**
+     * Writes the team_info + self-membership rows for a migrated SOLO player so
+     * the very first login resolves teamId=playerUuid and loads the migrated
+     * quest data immediately. Without this, the login fallback only creates the
+     * membership row asynchronously, so the migrated data would not appear until
+     * the player's SECOND login. Party exports are skipped: FTB Teams owns party
+     * membership and materializes it on login.
+     */
+    private static void writeSoloTeamBindings(ParsedExport parsed, AtomicInteger bindings) {
+        if (parsed.isParty) {
+            return;
+        }
+        UUID teamId = parsed.teamId;
+        String displayName = parsed.tag.getString("name");
+        int hashIdx = displayName.indexOf('#');
+        if (hashIdx >= 0) {
+            displayName = displayName.substring(0, hashIdx);
+        }
+        if (displayName.isBlank()) {
+            displayName = teamId.toString();
+        }
+        MySQLBackend db = MySQLBackend.getInstance();
+        db.upsertTeamInfo(teamId, "PLAYER", displayName, teamId, "0");
+        db.upsertMembership(teamId, teamId, "OWNER");
+        bindings.incrementAndGet();
+    }
+
+    /**
+     * Rewrites a solo export's player/team UUID to the player's current UUID
+     * from the usercache when the two differ. Party exports are left untouched:
+     * a party UUID is not a player UUID and has no usercache entry; FTB Teams
+     * materializes party membership on first login.
+     */
+    private static ParsedExport applyUuidRemap(ParsedExport parsed, UuidRemapper remapper, AtomicInteger remapped) {
+        if (parsed.isParty) {
+            return parsed;
+        }
+        String displayName = parsed.tag.getString("name");
+        int hashIdx = displayName.indexOf('#');
+        if (hashIdx >= 0) {
+            displayName = displayName.substring(0, hashIdx);
+        }
+        UUID current = remapper.currentUuidFor(displayName).orElse(null);
+        if (current == null || current.equals(parsed.teamId)) {
+            return parsed;
+        }
+        CompoundTag rewritten = parsed.tag.copy();
+        rewritten.putString("uuid", current.toString());
+        int rewrittenClaims = remapClaimedRewardKeys(rewritten, parsed.teamId, current);
+        FTBQuestsSync.LOGGER.info(
+                "Migration UUID remap: name={} legacyUuid={} -> currentUuid={} claimedRewardKeys={}",
+                displayName, parsed.teamId, current, rewrittenClaims);
+        remapped.incrementAndGet();
+        return new ParsedExport(rewritten, current, false, parsed.partyName);
+    }
+
+    /**
+     * Rewrites the per-player UUID prefix inside {@code claimed_rewards} keys.
+     * FTB Quests stores reward-claim keys as "&lt;dashless-player-uuid&gt;:&lt;reward-id&gt;"
+     * and checks claims by the player's CURRENT uuid. Without rewriting the
+     * prefix from the legacy uuid to the current one, every reward appears
+     * unclaimed after migration even though the player already claimed it.
+     */
+    private static int remapClaimedRewardKeys(CompoundTag tag, UUID oldId, UUID newId) {
+        if (!tag.contains("claimed_rewards", 10)) {
+            return 0;
+        }
+        CompoundTag claimed = tag.getCompound("claimed_rewards");
+        String oldPrefix = oldId.toString().replace("-", "");
+        String newPrefix = newId.toString().replace("-", "");
+        CompoundTag remappedClaims = new CompoundTag();
+        int changed = 0;
+        for (String key : claimed.getAllKeys()) {
+            String newKey = key;
+            if (key.startsWith(oldPrefix + ":")) {
+                newKey = newPrefix + key.substring(oldPrefix.length());
+                changed++;
+            }
+            remappedClaims.put(newKey, claimed.get(key).copy());
+        }
+        tag.put("claimed_rewards", remappedClaims);
+        return changed;
     }
 
     /**
@@ -273,9 +407,18 @@ public final class LegacyQuestMigrator {
                 }
             }
             return new ParsedExport(vanilla, teamId, isParty, partyName);
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.warn("SNBT parse failed ({} bytes): {}", snbtBytes.length, e.toString());
+        } catch (Throwable e) {
+            FTBQuestsSync.LOGGER.warn("SNBT parse failed ({} bytes)", snbtBytes.length, e);
             return null;
+        }
+    }
+
+    private static final class MigrationThreadFactory implements ThreadFactory {
+        @Override
+        public Thread newThread(Runnable r) {
+            Thread t = new Thread(r, "FTBQuestsSync-Migration");
+            t.setDaemon(true);
+            return t;
         }
     }
 }

@@ -33,7 +33,8 @@ public final class MigrationCommand {
                         .then(Commands.argument("dryRun", BoolArgumentType.bool())
                                 .executes(ctx -> runMigrate(ctx.getSource(),
                                         BoolArgumentType.getBool(ctx, "dryRun"), null)))
-                        .then(Commands.argument("maxPlayers", com.mojang.brigadier.arguments.IntegerArgumentType.integer(0))
+                        .then(Commands.argument("maxPlayers",
+                                com.mojang.brigadier.arguments.IntegerArgumentType.integer(0))
                                 .executes(ctx -> runMigrate(ctx.getSource(), null,
                                         com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(ctx, "maxPlayers"))))
                         .then(Commands.argument("dryRun", BoolArgumentType.bool())
@@ -52,23 +53,25 @@ public final class MigrationCommand {
         MySQLBackend db = MySQLBackend.getInstance();
         if (!db.isAvailable()) throw NO_DB.create();
 
-        if (dryRunOverride != null) {
-            Config.migrationDryRun = dryRunOverride;
-        }
-        if (maxOverride != null) {
-            Config.migrationMaxPlayers = maxOverride;
-        }
+        // Build an immutable snapshot of the operator's intent. Subsequent
+        // /ftbsync migrate invocations cannot mutate this value; the
+        // migrator thread reads it once and never looks at the static
+        // Config fields again.
+        boolean dryRun = dryRunOverride != null ? dryRunOverride : Config.migrationDryRun;
+        int maxPlayers = maxOverride != null ? maxOverride : Config.migrationMaxPlayers;
+        MigrationOptions opts = new MigrationOptions(
+                dryRun, maxPlayers, Config.migrationServerIdTag, Config.migrationSourceMysqlHost,
+                Config.migrationRemapUuids, Config.migrationUsercachePath);
 
-        final String dryLabel = String.valueOf(Config.migrationDryRun);
-        final int maxLabel = Config.migrationMaxPlayers;
         source.sendSuccess(() -> Component.literal(
-                "Starting legacy quest migration: dryRun=" + dryLabel + " maxPlayers=" + maxLabel), true);
+                "Starting legacy quest migration: dryRun=" + dryRun + " maxPlayers=" + maxPlayers), true);
         FTBQuestsSync.LOGGER.info("Manual migration requested by {}: dryRun={} maxPlayers={}",
-                source.getTextName(), dryLabel, maxLabel);
+                source.getTextName(), dryRun, maxPlayers);
 
-        Thread t = new Thread(LegacyQuestMigrator::runNow, "FTBQuestsSync-Migration-Manual");
-        t.setDaemon(true);
-        t.start();
+        // Hand off to the migrator's own single-thread executor; the
+        // method itself is a guard against concurrent invocations.
+        new Thread(() -> LegacyQuestMigrator.runNow(opts),
+                "FTBQuestsSync-Migration-ManualDispatch").start();
         return Command.SINGLE_SUCCESS;
     }
 }
