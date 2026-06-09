@@ -60,8 +60,40 @@ public final class Config {
     public static boolean teamRewardsDedupGlobal = true;
     public static boolean rewardFailClosed = true;
 
+    // -- Legacy per-player quest-data auto-migration --
+    // See net.agrarius.ftbquestssync.migration.LegacyQuestMigrator for the
+    // expected data contracts (Redis key shape, source MariaDB schema, ZIP
+    // entry name, marker file location).
+    public static boolean migrationRunOnBoot = false;
+    public static String migrationRedisKeyPrefix = "stratos:";
+    public static int migrationRedisDb = 0;
+    public static String migrationSourceMysqlHost = "";
+    public static int migrationSourceMysqlPort = 3306;
+    public static String migrationSourceMysqlDatabase = "CHANGEME";
+    public static String migrationSourceMysqlUsername = "CHANGEME";
+    public static String migrationSourceMysqlPassword = "";
+    public static String migrationSourceMysqlPlayersTable = "core_players";
+    public static String migrationSourceMysqlDataTable = "core_player_data";
+    public static String migrationSourceMysqlServerColumn = "server";
+    public static String migrationSourceMysqlBackupTypeColumn = "backup_type";
+    public static String migrationSourceMysqlCreatedAtColumn = "created_at";
+    public static String migrationSourceMysqlIdPlayerColumn = "id_player";
+    public static String migrationSourceMysqlDataColumn = "data";
+    public static String migrationSourceMysqlUuidColumn = "uuid";
+    public static String migrationSourceMysqlIdColumn = "id";
+    public static String migrationServerIdTag = "migrator";
+    public static int migrationMaxPlayers = 0; // 0 = no cap
+    public static boolean migrationDryRun = false;
+    public static String migrationRunOnServerId = ""; // empty = any server; otherwise must match Config.serverId
+    public static String migrationMarkerDir = "/opt/agrarius/config"; // parent directory for the per-server marker file
+
     /** Resolved at {@link #reload()}; never null after first reload. */
     static String serverId;
+
+    public static String getRedisHost() { return redisHost; }
+    public static int getRedisPort() { return redisPort; }
+    public static String getRedisPassword() { return redisPassword; }
+    public static String getServerId() { return serverId; }
 
     private Config() {
     }
@@ -105,6 +137,29 @@ public final class Config {
         soloRewardsPerPlayer = boolProp("ftbquestssync.policy.soloRewardsPerPlayer", toml.getOrDefault("soloRewardsPerPlayer", String.valueOf(soloRewardsPerPlayer)), soloRewardsPerPlayer);
         teamRewardsDedupGlobal = boolProp("ftbquestssync.policy.teamRewardsDedupGlobal", toml.getOrDefault("teamRewardsDedupGlobal", String.valueOf(teamRewardsDedupGlobal)), teamRewardsDedupGlobal);
         rewardFailClosed = boolProp("ftbquestssync.policy.rewardFailClosed", toml.getOrDefault("rewardFailClosed", String.valueOf(rewardFailClosed)), rewardFailClosed);
+
+        migrationRunOnBoot = boolProp("ftbquestssync.migration.runOnBoot", toml.getOrDefault("migrationRunOnBoot", String.valueOf(migrationRunOnBoot)), migrationRunOnBoot);
+        migrationRedisKeyPrefix = prop("ftbquestssync.migration.redisKeyPrefix", toml.getOrDefault("migrationRedisKeyPrefix", migrationRedisKeyPrefix));
+        migrationRedisDb = intProp("ftbquestssync.migration.redisDb", toml.getOrDefault("migrationRedisDb", String.valueOf(migrationRedisDb)), migrationRedisDb);
+        migrationSourceMysqlHost = prop("ftbquestssync.migration.sourceMysqlHost", toml.getOrDefault("migrationSourceMysqlHost", migrationSourceMysqlHost));
+        migrationSourceMysqlPort = intProp("ftbquestssync.migration.sourceMysqlPort", toml.getOrDefault("migrationSourceMysqlPort", String.valueOf(migrationSourceMysqlPort)), migrationSourceMysqlPort);
+        migrationSourceMysqlDatabase = prop("ftbquestssync.migration.sourceMysqlDatabase", toml.getOrDefault("migrationSourceMysqlDatabase", migrationSourceMysqlDatabase));
+        migrationSourceMysqlUsername = prop("ftbquestssync.migration.sourceMysqlUsername", toml.getOrDefault("migrationSourceMysqlUsername", migrationSourceMysqlUsername));
+        migrationSourceMysqlPassword = prop("ftbquestssync.migration.sourceMysqlPassword", toml.getOrDefault("migrationSourceMysqlPassword", migrationSourceMysqlPassword));
+        migrationSourceMysqlPlayersTable = prop("ftbquestssync.migration.sourcePlayersTable", toml.getOrDefault("migrationSourcePlayersTable", migrationSourceMysqlPlayersTable));
+        migrationSourceMysqlDataTable = prop("ftbquestssync.migration.sourceDataTable", toml.getOrDefault("migrationSourceDataTable", migrationSourceMysqlDataTable));
+        migrationSourceMysqlServerColumn = prop("ftbquestssync.migration.sourceServerColumn", toml.getOrDefault("migrationSourceServerColumn", migrationSourceMysqlServerColumn));
+        migrationSourceMysqlBackupTypeColumn = prop("ftbquestssync.migration.sourceBackupTypeColumn", toml.getOrDefault("migrationSourceBackupTypeColumn", migrationSourceMysqlBackupTypeColumn));
+        migrationSourceMysqlCreatedAtColumn = prop("ftbquestssync.migration.sourceCreatedAtColumn", toml.getOrDefault("migrationSourceCreatedAtColumn", migrationSourceMysqlCreatedAtColumn));
+        migrationSourceMysqlIdPlayerColumn = prop("ftbquestssync.migration.sourceIdPlayerColumn", toml.getOrDefault("migrationSourceIdPlayerColumn", migrationSourceMysqlIdPlayerColumn));
+        migrationSourceMysqlDataColumn = prop("ftbquestssync.migration.sourceDataColumn", toml.getOrDefault("migrationSourceDataColumn", migrationSourceMysqlDataColumn));
+        migrationSourceMysqlUuidColumn = prop("ftbquestssync.migration.sourceUuidColumn", toml.getOrDefault("migrationSourceUuidColumn", migrationSourceMysqlUuidColumn));
+        migrationSourceMysqlIdColumn = prop("ftbquestssync.migration.sourceIdColumn", toml.getOrDefault("migrationSourceIdColumn", migrationSourceMysqlIdColumn));
+        migrationServerIdTag = prop("ftbquestssync.migration.serverIdTag", toml.getOrDefault("migrationServerIdTag", migrationServerIdTag));
+        migrationMaxPlayers = intProp("ftbquestssync.migration.maxPlayers", toml.getOrDefault("migrationMaxPlayers", String.valueOf(migrationMaxPlayers)), migrationMaxPlayers);
+        migrationDryRun = boolProp("ftbquestssync.migration.dryRun", toml.getOrDefault("migrationDryRun", String.valueOf(migrationDryRun)), migrationDryRun);
+        migrationRunOnServerId = prop("ftbquestssync.migration.runOnServerId", toml.getOrDefault("migrationRunOnServerId", migrationRunOnServerId)).trim();
+        migrationMarkerDir = prop("ftbquestssync.migration.markerDir", toml.getOrDefault("migrationMarkerDir", migrationMarkerDir)).trim();
 
         String tomlServerId = toml.getOrDefault("serverId",
                 System.getProperty("ftbquestssync.serverId",

@@ -37,3 +37,33 @@ syncSoloProgressPerPlayer = true
 soloRewardsPerPlayer = true
 teamRewardsDedupGlobal = true
 rewardFailClosed = true
+
+# Optional: one-shot import of legacy per-player player data
+# (per-player ZIPs containing a `quests.snbt` entry). Runs on the first
+# server start after enabling; the mod writes a marker file at
+# <markerDir>/ftbquestssync.migration.done.<serverId> so subsequent
+# restarts become no-ops. Set runOnBoot=true to enable, or pass
+# -Dftbquestssync.migration.runOnBoot=true on the JVM command line.
+[migration]
+runOnBoot = false
+redisKeyPrefix = "stratos:"
+redisDb = 0
+# CHANGEME (optional): parent directory for the per-server marker
+# file. Override when the writable runtime state should not share a
+# filesystem with the toml config (e.g. NFS vs local).
+markerDir = "/opt/agrarius/config"
+# sourceMysqlHost = "CHANGEME"
+sourceMysqlPort = 3306
+sourceMysqlDatabase = "CHANGEME"
+sourceMysqlUsername = "CHANGEME"
+# sourceMysqlPassword = ""
+sourcePlayersTable = "core_players"
+sourceDataTable = "core_player_data"
+sourceUuidColumn = "uuid"
+sourceIdColumn = "id"
+sourceIdPlayerColumn = "id_player"
+sourceDataColumn = "data"
+sourceCreatedAtColumn = "created_at"
+serverIdTag = "migrator"
+maxPlayers = 0
+dryRun = false

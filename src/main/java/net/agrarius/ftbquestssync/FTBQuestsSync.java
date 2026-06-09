@@ -16,6 +16,9 @@ import net.minecraft.server.level.ServerPlayer;
 
 import dev.ftb.mods.ftbquests.quest.TeamData;
 import net.agrarius.ftbquestssync.access.TeamDataAccess;
+import net.agrarius.ftbquestssync.migration.ImportTeamsCommand;
+import net.agrarius.ftbquestssync.migration.LegacyQuestMigrator;
+import net.agrarius.ftbquestssync.migration.MigrationCommand;
 
 @Mod(FTBQuestsSync.MOD_ID)
 public class FTBQuestsSync {
@@ -30,7 +33,7 @@ public class FTBQuestsSync {
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {
-        LOGGER.info("FTB Quests Sync 1.1.9 booting");
+        LOGGER.info("FTB Quests Sync 1.2.0 booting");
         Config.reload();
         MySQLBackend.getInstance().initialize();
         if (Config.syncTeams) {
@@ -56,13 +59,14 @@ public class FTBQuestsSync {
         RankSoloProgress.init();
         ChunkSeeder.runIfConfigured(event.getServer());
         ChunkMaterializer.materializeAllLoaded(event.getServer());
-        LOGGER.info("FTB Quests Sync 1.1.9 ready (mysqlAvailable={}, redisEnabled={}, teamsRedisEnabled={}, serverId={})",
+        LOGGER.info("FTB Quests Sync 1.2.0 ready (mysqlAvailable={}, redisEnabled={}, teamsRedisEnabled={}, serverId={})",
                 MySQLBackend.getInstance().isAvailable(),
                 RedisSync.getInstance().isEnabled(),
                 TeamSync.getInstance().isEnabled(),
                 RedisSync.getInstance().getServerId());
         serverStarted = true;
         backfillMissingPlayerNames(event.getServer());
+        LegacyQuestMigrator.runIfNeeded();
     }
 
     private void backfillMissingPlayerNames(net.minecraft.server.MinecraftServer server) {
@@ -89,6 +93,8 @@ public class FTBQuestsSync {
     @SubscribeEvent
     public void onRegisterCommands(RegisterCommandsEvent event) {
         FtbSyncTeamCommand.register(event.getDispatcher());
+        MigrationCommand.register(event.getDispatcher());
+        ImportTeamsCommand.register(event.getDispatcher());
     }
 
     @SubscribeEvent

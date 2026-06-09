@@ -238,6 +238,320 @@ Not guaranteed: the final milliseconds before hard poweroff if async DB write di
 - `RewardClaimMixin.java` — cross-server reward dedupe and repeatable shop exception.
 - `TeamSync.java` / `TeamMaterializer.java` — FTB Teams DB sync and forced client full-sync after login/materialization.
 - `BaseQuestFileMixin.java` — access to FTB quest/team data where needed by sync logic.
+- `migration/LegacyQuestMigrator.java` — one-shot import of legacy per-player quest exports.
+
+## Legacy per-player quest-data migration
+
+When the mod is first deployed onto a server that already has historical
+quest progress stored in another system (e.g. an older Velocity-side
+sync that wrote per-player ZIPs to a shared store), the
+`[migration]` config block lets the mod pull that data into
+`ftbquests_teamdata` automatically on the first server start so the live
+sync machinery has authoritative state from day one.
+
+### What it reads
+
+For every player, the migrator expects a per-player ZIP archive whose
+layout matches the historical format. The ZIP must contain a
+`quests.snbt` entry (UTF-8 SNBT text of the FTB Quests `TeamData`
+serialization for that player). Other entries in the ZIP are ignored.
+
+Two sources are tried in order; the first non-empty result wins per
+player:
+
+1. **Redis** (preferred). Each player is read from a key whose name is
+   `<migrationRedisKeyPrefix><uuid>` where `<uuid>` may use either the
+   dashed (8-4-4-4-12) or undashed (32-hex) form. The key value must be
+   the raw ZIP bytes. Configure `migrationRedisKeyPrefix` to match the
+   prefix the legacy system writes (for example
+   `stratos:`, `old-export:player:blob:`, etc. — there is no
+   built-in assumption beyond the `<uuid>` suffix).
+2. **Source MariaDB** (fallback). The source database is expected to
+   expose a per-player table joined to a per-snapshot table:
+
+   ```sql
+   <sourcePlayersTable>(
+     <sourceIdColumn>,           -- integer PK
+     <sourceUuidColumn>,         -- varchar(36), canonical UUID
+     username, ...
+   )
+   <sourceDataTable>(
+     <sourceIdPlayerColumn>,     -- FK -> <sourcePlayersTable>.<sourceIdColumn>
+     <sourceIdColumn>,           -- integer PK
+     <sourceDataColumn>,         -- LONGBLOB, raw ZIP bytes
+     <sourceCreatedAtColumn>,    -- timestamp
+     <sourceBackupTypeColumn>,   -- integer
+     <sourceServerColumn>        -- varchar(64), nullable
+   )
+   ```
+
+   For every player the row with the latest `<sourceCreatedAtColumn>` is
+   used. If a `WHERE <sourceBackupTypeColumn>=0` filter is required to
+   pick only quest-export snapshots, leave the default (all rows) and
+   the most recent wins; the snapshot age is the canonical signal.
+
+### What it writes
+
+For each player the migrator:
+
+1. Extracts `quests.snbt` from the ZIP.
+2. Parses SNBT → vanilla `CompoundTag` and normalises the
+   `uuid:` field to canonical 8-4-4-4-12 form.
+3. Calls the mod's own `MySQLBackend.saveTeamData(uuid, tag)` path,
+   which gzip-compresses the tag, SHA-256-sums it, and UPSERTs into
+   `ftbquests_teamdata` with `team_id = <player-uuid>` and
+   `server_id = <migrationServerIdTag>` (default `migrator`).
+4. Records a per-server marker file
+   `<configDir>/ftbquestssync.migration.done.<serverId>` so that
+   subsequent restarts on the same server are no-ops. The marker is
+   per-`serverId` so a multi-server cluster (each with its own
+   `serverId`) can run the migration on the first start of each peer
+   without races or silent skip behaviour.
+
+### Configuration
+
+In `/opt/agrarius/config/ftbquestssync-server.toml` (or via
+`-Dftbquestssync.migration.*` JVM properties):
+
+```toml
+[migration]
+# CHANGEME: turn on only on the server that should perform the import
+runOnBoot          = false
+# CHANGEME: prefix matching the legacy system. The <uuid> suffix is
+# parsed with or without dashes.
+redisKeyPrefix     = "CHANGEME:player:blob:"
+redisDb            = 0
+# CHANGEME: when the Redis source is empty, the mod falls back to a
+# source MariaDB whose credentials and table layout are configured
+# below. Leave the host empty to skip the MariaDB source entirely.
+sourceMysqlHost     = "CHANGEME"
+sourceMysqlPort     = 3306
+sourceMysqlDatabase = "CHANGEME"
+sourceMysqlUsername = "CHANGEME"
+sourceMysqlPassword = "CHANGEME"
+# The defaults below match a per-player table layout with
+#   (id, uuid, username, …) joined to
+#   (id_player, id, data, created_at, backup_type, server)
+sourcePlayersTable      = "core_players"
+sourceDataTable         = "core_player_data"
+sourceUuidColumn        = "uuid"
+sourceIdColumn          = "id"
+sourceIdPlayerColumn    = "id_player"
+sourceDataColumn        = "data"
+sourceCreatedAtColumn   = "created_at"
+# Free-form tag written into ftbquests_teamdata.server_id so operators
+# can tell which rows came from a migration vs. live sync.
+serverIdTag             = "migrator"
+# 0 = no cap (process every player the source yields).
+maxPlayers              = 0
+# When true, the migrator parses and reports but never writes rows
+# and never writes the marker file. Use this for the first run.
+dryRun                  = false
+# When non-empty, the migration runs only if Config.serverId matches.
+# Leave empty to allow any server to perform the import.
+# CHANGEME: set this to the serverId that should run the import.
+runOnServerId           = ""
+```
+
+### Recommended rollout
+
+There are two ways to trigger a migration: an automatic one on the
+first server start (`runOnBoot = true`), and an explicit operator
+command (`/ftbsync migrate`). Both write through the same code path
+(`LegacyQuestMigrator.runNow`) and produce the same marker file.
+Pick one; the command is usually cleaner because the operator sees
+the result in the chat / console right away, and because it skips
+the per-`serverId` whitelist.
+
+**Automatic path** (used when `runOnBoot = true`):
+
+1. Build the mod and place the JAR on the first server (call it
+   `<serverId-A>`) along with the regular `[mysql]` and `[redis]`
+   config that points at the **target** database. Leave
+   `runOnBoot = false` and `dryRun = true` for the first start.
+2. With `runOnServerId = "<serverId-A>"` and `dryRun = true`, start
+   the server. Watch the log for `Migration source … returned N
+   blob(s)` and `Migration [DRY-RUN] would upsert player=…` for every
+   player. Verify the player count and a sampling of UUIDs match what
+   the legacy system holds.
+3. Flip `dryRun = false` and `runOnBoot = true`, then restart the
+   server. The log should end with `Migration upsert: player=…` for
+   every player and `Migration marker written to …`.
+4. Start the other server(s). The marker file is per-`serverId`, so
+   the second server's own marker is written only when that server
+   boots. If you want only one server to perform the import, set
+   `runOnServerId = "<serverId-A>"` everywhere and start
+   `<serverId-A>` first.
+
+**Manual command path** (used when `runOnBoot = false` but the
+operator still wants to trigger the import):
+
+The mod exposes two operator commands; the first pulls the legacy
+per-player quest data, the second pulls the currently-materialised
+FTB Teams into the shared database. They are typically run as a
+pair on the first server start that has both the legacy source
+available and the new MySQL/Redis reachable.
+
+1. Set `runOnBoot = true` in the config (this is what unlocks the
+   commands at all; the flag is checked at command dispatch time).
+   Leave `dryRun = true`.
+2. Start the server as usual. In the console or in-game as op, run
+   one of:
+
+   ```text
+   /ftbsync importteams                    # run on BOTH agr1 and agr2
+   /ftbsync migrate                        # run on ONE server only
+   /ftbsync migrate true                   # override to dryRun=true
+   /ftbsync migrate false                  # override to dryRun=false
+   /ftbsync migrate false 50               # dryRun=false, maxPlayers=50
+   /ftbsync migrate 100                    # TOML dryRun, maxPlayers=100
+   ```
+
+   The `importteams` command walks every FTB Teams party / solo
+   team that currently exists on the running server and UPSERTs it
+   into `ftbquests_team_info` and `ftbquests_team_membership` with
+   the real `serverId` (so rows tagged `agr1` come from running on
+   agr1, rows tagged `agr2` from agr2). Run it on **both** backends
+   so the database holds every server-local team.
+
+   The `migrate` command returns immediately and runs the per-
+   player quest data import on a daemon thread, so the server
+   tick is not blocked. Watch `latest.log` for
+   `Migration source … returned … blob(s)` and per-player
+   `Migration upsert: player=…` lines. Run it on **one** server
+   only — the same marker file prevents a second peer from
+   re-importing on the next boot.
+3. To re-run, delete the per-server marker file under `<configDir>/`
+   and run the command again. To wipe imported rows, drop them from
+   `ftbquests_teamdata` (the live sync will repopulate from current
+   in-memory state once the players log in).
+
+**Party handling.** Each export's `name:` field is
+`<display>#<team-uuid>`; the migrator detects whether `<team-uuid>`
+is the player's own UUID (solo team) or a distinct UUID (party). The
+log line `Migration upsert: player=… teamId=… party=… partyName=…`
+exposes the resolved team id and party name. The quest data is
+UPSERTed under the resolved `teamId`; the rest of the FTB Teams
+materialisation (party membership rows in `ftbquests_team_info` /
+`ftbquests_team_membership`) is left to the live FTB Teams sync on
+the first login of each affected player, so a stray solo import of a
+party member is reconciled by the mod's existing
+`TeamMaterializer` paths when the player actually connects.
+
+### Standalone dry-run utility
+
+For a quick "would this work against the real bytes?" check before any
+of the above, the shaded JAR also ships a `DryRunMain` entrypoint that
+reads every `.zip` under a directory and reports its `quests.snbt`
+SHA-256 + UUID + size without touching MySQL:
+
+    ```bash
+    java -cp /path/to/ftb-quests-mysql-sync-1.2.0.jar \
+         net.agrarius.ftbquestssync.migration.DryRunMain \
+         /path/to/zip-dir
+    ```
+
+    The summary at the bottom distinguishes three outcomes per file:
+    `[OK <uuid>]`, `[no-quests.snbt]` (the ZIP exists but has no export
+    entry — typically an unrelated file that happens to use the same
+    container), and `[BAD ]` (the ZIP itself failed to parse).
+
+    For a full end-to-end check against the real source MariaDB
+    (without the Forge runtime), use the JDBC variant that runs the
+    same `MysqlBlobSource` query the live migrator uses, and prints
+    the resolved team id, party name, gzip size, and SHA-256 per
+    player:
+
+    ```bash
+    java -cp /path/to/ftb-quests-mysql-sync-1.2.0.jar \
+         net.agrarius.ftbquestssync.migration.MigrateDryRunMain \
+         --src maria \
+         --db-host <SOURCE_HOST> --db-port 3306 --db-name <SOURCE_DB> \
+         --db-user <USER> --db-pass <PASS> \
+         --players-table core_players --data-table core_player_data \
+         --limit 0
+    ```
+
+    Override column names with `--uuid-column`, `--id-column`,
+    `--id-player-column`, `--data-column`, `--created-at-column`
+    if your schema deviates from the defaults. The output prints
+    one line per player and a final summary: `ok=… noSnbt=…
+    noUuid=… bad=…`.
+
+### Log lines to watch for
+
+After the live (non-dry-run) migration, the operator should expect
+the following in `logs/latest.log`, in this order, right before the
+"ready" log line:
+
+```text
+Migration source redis://<host>:<port> db=<n> prefix=<prefix> returned <N> blob(s)
+Legacy quest migration done: playersSeen=<N> upserts=<M> skippedNoSnbt=<K> failed=<F> elapsedMs=<T> dryRun=false
+Migration marker written to <configDir>/ftbquestssync.migration.done.<serverId>
+```
+
+A second, peer-server boot adds the same three lines scoped to that
+peer's `serverId` and writes a second marker file. After both peers
+have booted, the rest of the runtime behaves exactly like 1.1.9.
+
+### Scale
+
+There is no built-in cap on the number of players migrated per run.
+`maxPlayers = 0` means "no cap"; the source yields however many blobs
+it has and the migrator processes them sequentially in a single pass
+on the server thread. Empirically each player takes a few milliseconds
+(extract ZIP → parse SNBT → write NBT → gzip → UPSERT), so 70–200+
+players complete in well under a minute on a warm JDBC pool. If your
+deployment expects thousands of players, set `maxPlayers` to a
+positive integer, restart, and the migrator will run that many
+players and write a marker; subsequent restarts continue until the
+source is exhausted.
+
+### Troubleshooting
+
+| Symptom in `latest.log` | Likely cause | Fix |
+|---|---|---|
+| `Migration source redis://… returned 0 blob(s)` | `migrationRedisKeyPrefix` does not match what the legacy system writes | `redis-cli -h <host> KEYS '<prefix>*'` to see what keys exist; align the TOML prefix |
+| `Migration source redis://… failed: NOAUTH Authentication required.` | The Redis source is protected by `AUTH` but no password is configured | Set `migrationRedisKeyPrefix` is unrelated — set `redisPassword` in the regular `[redis]` block (the migrator reuses that pool) |
+| `Migration source redis://… failed: JedisConnectionException: …` | Wrong host/port or firewall | Verify `redis-cli -h <host> -p <port> PING`; this is a network issue, not a migration issue |
+| `Migration source mariadb://… failed: Access denied for user '…'` | `migrationSourceMysqlUsername`/`Password` is wrong or the user has no `SELECT` on the source tables | Grant `SELECT` on the source DB to the configured user; check that the password matches |
+| `Migration source mariadb://… returned 0 blob(s)` | `sourcePlayersTable` / `sourceDataTable` names are wrong, or the source MariaDB really is empty for that user | `SELECT COUNT(*) FROM <sourceDataTable>` directly; check that the user's default database matches `migrationSourceMysqlDatabase` |
+| `Legacy quest migration done: … failed=12 …` | A handful of players had corrupt ZIPs or non-standard layouts | Inspect `Migration failed for player <uuid>: <reason>` lines just above the summary; failed players are skipped, the rest are imported, the marker is **not** written so a restart will retry the failures |
+| `Migration finished with N failure(s); marker NOT written` | Same as above — the marker stays absent so the next restart retries | Fix the underlying cause or accept the failed count; deletion of `<configDir>/ftbquestssync.migration.done.<serverId>` also forces a re-run |
+| `Legacy quest migration skipped: this serverId=agr2 does not match runOnServerId=agr1` | `migrationRunOnServerId` is set and the current server's `serverId` is different | Either clear `runOnServerId` so any server may run, or set it to the current server's `serverId` |
+| `Legacy quest migration already completed for serverId=… (marker at …); skipping` | Marker file from a previous run is present | Expected behaviour after a successful run; delete the marker file under `<configDir>/` to force a re-run |
+| `Migration source … returned 0 blob(s)` but the legacy system has data | The legacy system writes with a different prefix, **or** the legacy data lives in a different Redis DB number | Try `redis-cli -n 0..15 KEYS '*' \| head` to find the actual prefix and DB; set `migrationRedisDb` and `migrationRedisKeyPrefix` accordingly |
+
+### Rollback
+
+The migration is a UPSERT, so removing the imported rows is a single
+SQL statement per affected player:
+
+```sql
+DELETE FROM ftbquests_teamdata
+ WHERE server_id = 'migrator'
+   AND team_id IN ('<uuid-1>', '<uuid-2>', ...);
+```
+
+To force a re-run after a rollback, also delete the per-server marker
+file under `<configDir>/`. Subsequent live syncs from any connected
+Forge backend will repopulate `ftbquests_teamdata` with the current
+in-memory state on the first `TeamData.markDirty` for each affected
+player, so the legacy-imported rows are not needed after the first
+post-rollback login.
+
+### SQL dump vs. JDBC
+
+If you only have a SQL dump from the legacy system (Adminer-style
+`INSERT INTO … VALUES (…,'PK\x03…',…)` lines) rather than live JDBC
+access, do not use the migrator directly — the `'\…\…'` SQL string
+escaping and embedded backslash sequences are not what JDBC sees.
+Instead, **load the dump into a temporary MariaDB** with the same
+`core_players` + `core_player_data` schema and point the migrator at
+that database; the migrator reads via standard JDBC `getBytes()` and
+never sees the SQL dump's quoting. The standalone `DryRunMain` can
+verify ZIPs straight off the filesystem, but the migrator itself only
+talks JDBC.
 
 ## What to share
 

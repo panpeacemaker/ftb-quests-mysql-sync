@@ -523,6 +523,20 @@ public class MySQLBackend {
      * Minecraft-thread hooks.
      */
     public SaveResult saveTeamData(UUID teamId, CompoundTag tag) {
+        return saveTeamDataInternal(teamId, tag, RedisSync.getInstance().getServerId());
+    }
+
+    /**
+     * Migration entry point: writes a team-data row with a caller-
+     * supplied {@code server_id} so imported rows can be distinguished
+     * from live sync writes (default tag is {@code "migrator"}; see
+     * {@code Config.migrationServerIdTag}).
+     */
+    public SaveResult saveTeamDataMigration(UUID teamId, CompoundTag tag, String serverIdTag) {
+        return saveTeamDataInternal(teamId, tag, serverIdTag);
+    }
+
+    private SaveResult saveTeamDataInternal(UUID teamId, CompoundTag tag, String serverId) {
         if (!isAvailable()) return null;
 
         try (Connection conn = connectionProvider.getConnection();
@@ -538,14 +552,14 @@ public class MySQLBackend {
             ps.setString(1, teamId.toString());
             ps.setBytes(2, bytes);
             ps.setBytes(3, hash);
-            ps.setString(4, RedisSync.getInstance().getServerId());
+            ps.setString(4, serverId);
             int rows = ps.executeUpdate();
 
             SaveResult meta = loadMeta(conn, teamId, hash);
 
             FTBQuestsSync.LOGGER.info(
                     "Saved FTB team data to MySQL: team={} bytes={} rows={} revision={} hash={} serverId={}",
-                    teamId, bytes.length, rows, meta.revision, meta.hashHex, RedisSync.getInstance().getServerId());
+                    teamId, bytes.length, rows, meta.revision, meta.hashHex, serverId);
             return meta;
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.error("MySQL save failed for team {}", teamId, e);
