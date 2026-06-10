@@ -288,6 +288,8 @@ the database as the authoritative source.
 | **What about FTB Teams and chunks?** | Two operator commands: `/ftbsync importteams` walks the FTB Teams currently materialised on the running server and writes them to `ftbquests_team_info` / `ftbquests_team_membership`. |
 | **When does it run?** | Either automatically on the first server start (`runOnBoot = true` + marker not present), or manually via `/ftbsync migrate` (operator command). |
 | **Will it run again on next boot?** | No. A per-server marker file (`<markerDir>/ftbquestssync.migration.done.<serverId>`) prevents re-runs. Delete the marker to force a re-run. |
+| **Which snapshot per player?** | The newest `created_at`, breaking ties on the highest `id`. The tie-break makes the choice deterministic when two snapshots share a timestamp (otherwise the picked row would be JDBC-order-dependent). |
+| **Solo vs party?** | A solo export's `uuid` field equals the source player uuid, so it imports under `team_id = <player-uuid>`. A party export carries the shared party uuid in its `uuid` field (distinct from the source player uuid); it imports once under `team_id = <party-uuid>` and other members of the same party are de-duplicated. Party `team_info`/`membership` rows are **not** written — FTB Teams materializes them on first login. (The party uuid is not in `usercache.json`, so it is not remapped; this is expected.) |
 | **How long does it take?** | A few ms per player. 70–200+ players complete in under a minute. |
 
 ### Data flow
