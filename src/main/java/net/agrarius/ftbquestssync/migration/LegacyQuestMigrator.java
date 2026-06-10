@@ -474,31 +474,20 @@ public final class LegacyQuestMigrator {
             } else {
                 vanilla.putString("uuid", fallbackPlayerUuid.toString());
             }
-            // FTB Quests name field is "<display>#<team-uuid>". For solo teams
-            // the team uuid equals the player uuid; for parties it is a
-            // distinct uuid. Resolve the team uuid from the suffix if present.
+            // The team id is the blob's own uuid field. For a solo export it
+            // equals the player uuid (the DB-key uuid); for a party export the
+            // legacy mod serialized the shared party TeamData, whose uuid is the
+            // distinct party uuid. So a uuid that differs from the DB-key player
+            // uuid means this is a party export. The name suffix
+            // ("<display>#<shortid>") is only a display hint and may be an 8-char
+            // short id, so it is not authoritative for the team id.
             UUID teamId = playerUuid;
-            boolean isParty = false;
+            boolean isParty = !playerUuid.equals(fallbackPlayerUuid);
             String partyName = null;
             String nameField = vanilla.getString("name");
             int hashIdx = nameField.indexOf('#');
-            if (hashIdx >= 0 && hashIdx + 1 < nameField.length()) {
-                String suffix = nameField.substring(hashIdx + 1);
-                if (suffix.length() == 32 && suffix.matches("[0-9a-fA-F]{32}")) {
-                    try {
-                        teamId = UUID.fromString(suffix.substring(0, 8) + "-" + suffix.substring(8, 12) + "-"
-                                + suffix.substring(12, 16) + "-" + suffix.substring(16, 20) + "-"
-                                + suffix.substring(20));
-                        isParty = !teamId.equals(playerUuid);
-                        partyName = nameField.substring(0, hashIdx);
-                    } catch (IllegalArgumentException ignored) { }
-                } else if (suffix.length() == 36) {
-                    try {
-                        teamId = UUID.fromString(suffix);
-                        isParty = !teamId.equals(playerUuid);
-                        partyName = nameField.substring(0, hashIdx);
-                    } catch (IllegalArgumentException ignored) { }
-                }
+            if (isParty && hashIdx > 0) {
+                partyName = nameField.substring(0, hashIdx);
             }
             return new ParsedExport(vanilla, teamId, isParty, partyName);
         } catch (Throwable e) {
