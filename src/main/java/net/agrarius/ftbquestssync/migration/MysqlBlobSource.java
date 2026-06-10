@@ -19,12 +19,12 @@ import java.util.UUID;
  *   <playersTable>(<idColumn>, <uuidColumn>, username, ...)
  *   <dataTable>(<idPlayerColumn>, <idColumn>, <dataColumn> LONGBLOB, <createdAtColumn>, ...)
  *
- * For each player the row with the latest {@code created_at} is used
- * (no backup_type/server filter is applied — the latest row wins; if
- * the source schema also has unrelated rows, filter with a dedicated
- * source DB view or set the {@code idPlayerColumn} accordingly). The
- * actual quest export inside the ZIP is identified by the
- * {@code quests.snbt} entry (see {@link ZipSnbtExtractor}).
+ * For each player the row with the latest {@code created_at} is used,
+ * breaking ties on the highest {@code id} so the selection is
+ * deterministic when two snapshots share a timestamp (no
+ * backup_type/server filter is applied). The actual quest export inside
+ * the ZIP is identified by the {@code quests.snbt} entry (see
+ * {@link ZipSnbtExtractor}).
  */
 public final class MysqlBlobSource implements PlayerBlobSource {
 
@@ -91,14 +91,23 @@ public final class MysqlBlobSource implements PlayerBlobSource {
     @Override
     public Map<UUID, byte[]> loadAll() throws SQLException {
         Map<UUID, byte[]> out = new HashMap<>();
+        // Pick exactly one snapshot per player: the newest created_at, breaking
+        // ties on the highest id. Without the id tie-break, two snapshots sharing
+        // the same created_at both match the MAX(created_at) join and the chosen
+        // row becomes JDBC-order-dependent (non-deterministic) — on a real source
+        // that can silently import an older/wrong blob.
         String query = "SELECT p." + uuidColumn + " AS uuid, d." + dataColumn + " AS data "
                 + "FROM " + playersTable + " p "
                 + "JOIN " + dataTable + " d ON d." + idPlayerColumn + " = p." + idColumn + " "
                 + "INNER JOIN ("
-                + "  SELECT " + idPlayerColumn + ", MAX(" + createdAtColumn + ") AS max_created_at "
-                + "  FROM " + dataTable + " GROUP BY " + idPlayerColumn
+                + "  SELECT " + idPlayerColumn + ", MAX(" + idColumn + ") AS max_id FROM " + dataTable + " t "
+                + "  JOIN ("
+                + "    SELECT " + idPlayerColumn + " AS pid, MAX(" + createdAtColumn + ") AS max_created_at "
+                + "    FROM " + dataTable + " GROUP BY " + idPlayerColumn
+                + "  ) mc ON mc.pid = t." + idPlayerColumn + " AND mc.max_created_at = t." + createdAtColumn
+                + "  GROUP BY " + idPlayerColumn
                 + ") latest ON latest." + idPlayerColumn + " = d." + idPlayerColumn
-                + "       AND latest.max_created_at = d." + createdAtColumn;
+                + "       AND latest.max_id = d." + idColumn;
         FTBQuestsSync.LOGGER.info("Migration source MariaDB query: {}", query);
         try (Connection conn = DriverManager.getConnection(jdbcUrl, user, password);
              PreparedStatement ps = conn.prepareStatement(query);
