@@ -213,7 +213,7 @@ The whole rollout is **two operator commands**:
 >
 > **A player who is missing from `usercache.json` is NOT remapped — their quests, ranks and reward claims are written under the dead offline UUID and that player will see NOTHING until you refresh the usercache and migrate again.**
 >
-> Verified on real data: `Raketak_skaj` was in the usercache → remapped `af6c18a8…`(offline) → `aa1dfc43…`(online) → data appears correctly on login. A test player who was *not* in the usercache stayed under the offline UUID and his data was orphaned.
+> Verified on real data: a player present in the usercache was remapped from his offline UUID to his current online UUID and his quests/ranks/claims appeared correctly on login. A player who was *not* in the usercache stayed under the dead offline UUID and his data was orphaned.
 >
 > **Before migrating:** confirm every player is in `/opt/agrarius/usercache.json`.
 > **After migrating:** the log prints `===== MIGRATION SUMMARY ===== … uuidMissedNoUsercache=<N> …`. **That number must be `0`.** If it is not, the log names each missed player — refresh the usercache and re-run.
@@ -252,7 +252,7 @@ A **solo** export's `uuid` field equals the player's own UUID → imported under
 
 A **party** export carries the shared party UUID (different from the player UUID) → imported once under `team_id = <party-uuid>`; other members of the same party are de-duplicated to that one write. Party `team_info` / `membership` are **not** written here — FTB Teams materializes them on login.
 
-> The legacy `name` suffix (`Display#af6c18a8`) is only an 8-char short id, so detection uses the blob's `uuid` field, never the name.
+> The legacy `name` suffix (`Display#<8-char-shortid>`) is only an 8-char short id, so detection uses the blob's `uuid` field, never the name.
 
 ### Safety properties
 
