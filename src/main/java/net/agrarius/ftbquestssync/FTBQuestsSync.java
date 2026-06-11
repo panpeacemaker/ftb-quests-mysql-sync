@@ -12,6 +12,8 @@ import net.minecraftforge.event.server.ServerStartedEvent;
 import net.minecraftforge.event.server.ServerStoppingEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.config.ModConfig;
+import net.minecraftforge.fml.event.config.ModConfigEvent;
 import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
 import org.slf4j.Logger;
@@ -38,13 +40,30 @@ public class FTBQuestsSync {
     public static volatile boolean serverStarted = false;
 
     public FTBQuestsSync() {
-        FMLJavaModLoadingContext.get().getModEventBus().addListener(this::commonSetup);
+        var modEventBus = FMLJavaModLoadingContext.get().getModEventBus();
+        modEventBus.addListener(this::commonSetup);
+        modEventBus.addListener(this::onConfigLoading);
+        modEventBus.addListener(this::onConfigReloading);
+        // COMMON config is used deliberately: SERVER configs are synced to clients and
+        // this file contains database credentials. See Config.java class javadoc.
+        FMLJavaModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, Config.SPEC);
         MinecraftForge.EVENT_BUS.register(this);
+    }
+
+    private void onConfigLoading(ModConfigEvent.Loading event) {
+        if (event.getConfig().getSpec() == Config.SPEC) {
+            Config.refresh(event.getConfig());
+        }
+    }
+
+    private void onConfigReloading(ModConfigEvent.Reloading event) {
+        if (event.getConfig().getSpec() == Config.SPEC) {
+            Config.refresh(event.getConfig());
+        }
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {
         LOGGER.info("FTB Quests Sync 1.2.0 booting");
-        Config.reload();
         MySQLBackend.getInstance().initialize();
         if (Config.syncTeams) {
             TeamSync.getInstance().registerEventListeners();
