@@ -1,4 +1,4 @@
-package net.agrarius.ftbquestssync;
+package net.agrarius.ftbquestssync.teams;
 
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;

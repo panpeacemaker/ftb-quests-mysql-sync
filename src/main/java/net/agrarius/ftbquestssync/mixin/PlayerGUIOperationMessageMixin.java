@@ -10,8 +10,9 @@ import net.agrarius.ftbquestssync.FTBQuestsSync;
 import net.agrarius.ftbquestssync.FtbSyncTeamCommand;
 import net.agrarius.ftbquestssync.MySQLBackend;
 import net.agrarius.ftbquestssync.RedisSync;
-import net.agrarius.ftbquestssync.TeamMaterializer;
-import net.agrarius.ftbquestssync.TeamSync;
+import net.agrarius.ftbquestssync.teams.TeamMaterializer;
+import net.agrarius.ftbquestssync.teams.TeamSync;
+import net.agrarius.ftbquestssync.teams.model.TeamMemberRow;
 import net.minecraft.server.level.ServerPlayer;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -144,7 +145,7 @@ public class PlayerGUIOperationMessageMixin {
                         partyTeam.getId(), err);
                 return;
             }
-            List<MySQLBackend.TeamMemberRow> members = state == null ? List.of() : state.members();
+            List<TeamMemberRow> members = state == null ? List.of() : state.members();
             player.getServer().execute(() -> FtbSyncTeamCommand.applyOwnerTransferLocal(
                     player.getServer(), player.createCommandSourceStack(),
                     partyTeam.getId(), TeamSync.profileFor(player.getServer(), targetId), members));

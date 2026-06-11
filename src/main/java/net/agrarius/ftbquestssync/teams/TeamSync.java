@@ -1,4 +1,4 @@
-package net.agrarius.ftbquestssync;
+package net.agrarius.ftbquestssync.teams;
 
 import com.mojang.authlib.GameProfile;
 import dev.ftb.mods.ftbteams.api.FTBTeamsAPI;
@@ -37,7 +37,16 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import net.agrarius.ftbquestssync.Config;
+import net.agrarius.ftbquestssync.FTBQuestsSync;
+import net.agrarius.ftbquestssync.FtbSyncTeamCommand;
+import net.agrarius.ftbquestssync.MySQLBackend;
+import net.agrarius.ftbquestssync.RedisSync;
 import net.agrarius.ftbquestssync.chunks.ChunkMaterializer;
+import net.agrarius.ftbquestssync.teams.model.TeamInfoRow;
+import net.agrarius.ftbquestssync.teams.model.TeamInviteRow;
+import net.agrarius.ftbquestssync.teams.model.TeamMemberRow;
+import net.agrarius.ftbquestssync.teams.model.TeamMembershipRow;
 
 /**
  * Bidirectional FTB Teams membership/lifecycle sync.
@@ -158,7 +167,7 @@ public final class TeamSync {
         UUID teamId = team.getId();
         if (TeamMutationGuard.isTeamSuppressed(teamId)) return;
         List<UUID> memberUuids = MySQLBackend.getInstance().selectTeamMembers(teamId).stream()
-                .map(MySQLBackend.TeamMemberRow::playerUuid)
+                .map(TeamMemberRow::playerUuid)
                 .toList();
         MySQLBackend.getInstance().migratePartyToSoloMembers(teamId, memberUuids);
         MySQLBackend.getInstance().markTeamDeletedAsync(teamId);
@@ -529,7 +538,7 @@ public final class TeamSync {
         UUID inviterId = inviter.getUUID();
         MySQLBackend db = MySQLBackend.getInstance();
 
-        MySQLBackend.TeamMembershipRow current = db.selectMembership(targetId).orElse(null);
+        TeamMembershipRow current = db.selectMembership(targetId).orElse(null);
         if (current != null && !targetId.equals(current.teamId())) {
             FTBQuestsSync.LOGGER.warn("Invite blocked: target={} already in party team={}", targetId, current.teamId());
             return;
@@ -683,13 +692,13 @@ public final class TeamSync {
                 FTBQuestsSync.LOGGER.warn("Remote props DB load failed team={}", teamId, err);
                 return;
             }
-            MySQLBackend.TeamInfoRow info = row.orElse(null);
+            TeamInfoRow info = row.orElse(null);
             if (info == null || info.deleted()) return;
             server.execute(() -> applyRemoteProps(teamId, info));
         });
     }
 
-    private void applyRemoteProps(UUID teamId, MySQLBackend.TeamInfoRow info) {
+    private void applyRemoteProps(UUID teamId, TeamInfoRow info) {
         if (!TeamMaterializer.ensureTeamMaterialized(teamId)) return;
         TeamManager mgr = FTBTeamsAPI.api().getManager();
         Team team = mgr.getTeamByID(teamId).orElse(null);
@@ -770,7 +779,7 @@ public final class TeamSync {
     }
 
     private void handleRemoteInvite(UUID teamId, UUID playerId) {
-        java.util.Optional<MySQLBackend.TeamInviteRow> inviteOpt = MySQLBackend.getInstance().selectTeamInvite(teamId, playerId);
+        java.util.Optional<TeamInviteRow> inviteOpt = MySQLBackend.getInstance().selectTeamInvite(teamId, playerId);
         if (inviteOpt.isEmpty()) {
             FTBQuestsSync.LOGGER.debug("Remote invite ignored: no DB invite row team={} player={}", teamId, playerId);
             return;

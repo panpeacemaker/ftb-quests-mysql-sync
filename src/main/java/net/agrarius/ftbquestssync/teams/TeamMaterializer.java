@@ -1,4 +1,4 @@
-package net.agrarius.ftbquestssync;
+package net.agrarius.ftbquestssync.teams;
 
 import dev.ftb.mods.ftbteams.api.FTBTeamsAPI;
 import dev.ftb.mods.ftbteams.api.Team;
@@ -19,7 +19,17 @@ import java.util.UUID;
 import net.minecraft.server.MinecraftServer;
 import net.minecraftforge.server.ServerLifecycleHooks;
 
+import net.agrarius.ftbquestssync.Config;
+import net.agrarius.ftbquestssync.FTBQuestsSync;
+import net.agrarius.ftbquestssync.MySQLBackend;
+import net.agrarius.ftbquestssync.RedisSync;
+import net.agrarius.ftbquestssync.TeamLoadStateRegistry;
 import net.agrarius.ftbquestssync.chunks.ChunkMaterializer;
+import net.agrarius.ftbquestssync.teams.model.TeamInfoRow;
+import net.agrarius.ftbquestssync.teams.model.TeamInviteRow;
+import net.agrarius.ftbquestssync.teams.model.TeamMaterializationRow;
+import net.agrarius.ftbquestssync.teams.model.TeamMemberRow;
+import net.agrarius.ftbquestssync.teams.model.TeamMembershipRow;
 
 /**
  * Reflection bridge for materializing FTB Teams across servers.
@@ -59,9 +69,9 @@ public final class TeamMaterializer {
         });
     }
 
-    private static void materializeOnServerThread(ServerPlayer player, MySQLBackend.TeamMaterializationRow row) {
+    private static void materializeOnServerThread(ServerPlayer player, TeamMaterializationRow row) {
         UUID playerUuid = player.getUUID();
-        MySQLBackend.TeamMembershipRow membership = row.membership();
+        TeamMembershipRow membership = row.membership();
         UUID dbTeamId = membership.teamId();
         MembershipCache.put(playerUuid, dbTeamId);
         TeamManager mgr = FTBTeamsAPI.api().getManager();
@@ -96,7 +106,7 @@ public final class TeamMaterializer {
             return;
         }
 
-        MySQLBackend.TeamInfoRow infoRow = row.info();
+        TeamInfoRow infoRow = row.info();
         if (existing != null) {
             try (TeamMutationGuard.Scope teamScope = TeamMutationGuard.suppressTeam(dbTeamId);
                  TeamMutationGuard.Scope playerScope = TeamMutationGuard.suppressPlayer(playerUuid)) {
@@ -122,7 +132,7 @@ public final class TeamMaterializer {
             return;
         }
 
-        MySQLBackend.TeamInfoRow info = infoRow;
+        TeamInfoRow info = infoRow;
         if (info == null || info.deleted()) return;
         if (!"PARTY".equals(info.type())) return;
 
@@ -183,13 +193,13 @@ public final class TeamMaterializer {
     public static boolean ensureTeamMaterialized(UUID teamId) {
         TeamManager mgr = FTBTeamsAPI.api().getManager();
         Team existing = mgr.getTeamByID(teamId).orElse(null);
-        MySQLBackend.TeamInfoRow info = MySQLBackend.getInstance().selectTeamInfo(teamId).orElse(null);
+        TeamInfoRow info = MySQLBackend.getInstance().selectTeamInfo(teamId).orElse(null);
         if (info == null || info.deleted()) {
             FTBQuestsSync.LOGGER.warn("Cannot materialize missing team {} for chunk sync: no team_info row", teamId);
             return false;
         }
-        List<MySQLBackend.TeamMemberRow> members = MySQLBackend.getInstance().selectTeamMembers(teamId);
-        List<MySQLBackend.TeamInviteRow> invites = MySQLBackend.getInstance().selectTeamInvites(teamId);
+        List<TeamMemberRow> members = MySQLBackend.getInstance().selectTeamMembers(teamId);
+        List<TeamInviteRow> invites = MySQLBackend.getInstance().selectTeamInvites(teamId);
         if (existing != null) {
             try (TeamMutationGuard.Scope teamScope = TeamMutationGuard.suppressTeam(teamId)) {
                 applyMembershipSnapshot(existing, members, info.owner(), invites);
@@ -202,7 +212,7 @@ public final class TeamMaterializer {
         }
         Object created = createTeamWithUuid(mgr, teamId, info.type(), info.name(), info.owner());
         if (created == null) return false;
-        for (MySQLBackend.TeamMemberRow member : members) {
+        for (TeamMemberRow member : members) {
             addPlayerToTeamReflective(created, member.playerUuid(), member.rank());
         }
         if (created instanceof Team materialized) {
@@ -225,7 +235,7 @@ public final class TeamMaterializer {
             }
             if (invites == null || invites.isEmpty()) return;
             player.getServer().execute(() -> {
-                for (MySQLBackend.TeamInviteRow invite : invites) {
+                for (TeamInviteRow invite : invites) {
                     try {
                         if (!ensureTeamMaterialized(invite.teamId())) continue;
                         TeamManager mgr = FTBTeamsAPI.api().getManager();
@@ -286,11 +296,11 @@ public final class TeamMaterializer {
         addPlayerToTeamReflective(team, playerUuid, rank);
     }
 
-    public static void applyMembershipSnapshot(Team team, List<MySQLBackend.TeamMemberRow> members, UUID ownerUuid) {
+    public static void applyMembershipSnapshot(Team team, List<TeamMemberRow> members, UUID ownerUuid) {
         applyMembershipSnapshot(team, members, ownerUuid, List.of());
     }
 
-    public static void applyMembershipSnapshot(Team team, List<MySQLBackend.TeamMemberRow> members, UUID ownerUuid, List<MySQLBackend.TeamInviteRow> invites) {
+    public static void applyMembershipSnapshot(Team team, List<TeamMemberRow> members, UUID ownerUuid, List<TeamInviteRow> invites) {
         if (team == null) return;
         if (ownerUuid != null && team instanceof PartyTeam) {
             setPartyOwnerReflective(team, ownerUuid);
@@ -307,7 +317,7 @@ public final class TeamMaterializer {
 
             ranks.clear();
             if (members != null) {
-                for (MySQLBackend.TeamMemberRow member : members) {
+                for (TeamMemberRow member : members) {
                     addPlayerToTeamReflective(team, member.playerUuid(), member.rank());
                 }
             }
@@ -326,12 +336,12 @@ public final class TeamMaterializer {
                 }
             }
             if (invites != null) {
-                for (MySQLBackend.TeamInviteRow invite : invites) {
+                for (TeamInviteRow invite : invites) {
                     UUID invited = invite.invitedUuid();
                     if (invited != null && !invited.equals(ownerUuid)) {
                         boolean alreadyMember = false;
                         if (members != null) {
-                            for (MySQLBackend.TeamMemberRow member : members) {
+                            for (TeamMemberRow member : members) {
                                 if (invited.equals(member.playerUuid())) {
                                     alreadyMember = true;
                                     break;
@@ -486,10 +496,10 @@ public final class TeamMaterializer {
         }
     }
 
-    private static void primeGameProfileCacheAsync(MinecraftServer server, List<MySQLBackend.TeamMemberRow> members) {
+    private static void primeGameProfileCacheAsync(MinecraftServer server, List<TeamMemberRow> members) {
         if (server == null || members == null || members.isEmpty()) return;
         List<UUID> uuids = new ArrayList<>();
-        for (MySQLBackend.TeamMemberRow member : members) {
+        for (TeamMemberRow member : members) {
             if (member.playerUuid() != null) uuids.add(member.playerUuid());
         }
         if (uuids.isEmpty()) return;
@@ -510,10 +520,10 @@ public final class TeamMaterializer {
         });
     }
 
-    private static void primeGameProfileCache(MinecraftServer server, List<MySQLBackend.TeamMemberRow> members) {
+    private static void primeGameProfileCache(MinecraftServer server, List<TeamMemberRow> members) {
         if (server == null || members == null || members.isEmpty()) return;
         List<UUID> uuids = new ArrayList<>();
-        for (MySQLBackend.TeamMemberRow member : members) {
+        for (TeamMemberRow member : members) {
             if (member.playerUuid() != null) uuids.add(member.playerUuid());
         }
         if (uuids.isEmpty()) return;

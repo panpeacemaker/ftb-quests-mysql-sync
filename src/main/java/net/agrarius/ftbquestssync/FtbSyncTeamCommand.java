@@ -21,6 +21,13 @@ import java.util.Optional;
 import java.util.UUID;
 
 import net.agrarius.ftbquestssync.chunks.ChunkLimitPatcher;
+import net.agrarius.ftbquestssync.teams.TeamMaterializer;
+import net.agrarius.ftbquestssync.teams.TeamMutationGuard;
+import net.agrarius.ftbquestssync.teams.TeamSync;
+import net.agrarius.ftbquestssync.teams.model.TeamInfoRow;
+import net.agrarius.ftbquestssync.teams.model.TeamMaterializationRow;
+import net.agrarius.ftbquestssync.teams.model.TeamMemberRow;
+import net.agrarius.ftbquestssync.teams.model.TeamMembershipRow;
 
 public final class FtbSyncTeamCommand {
 
@@ -103,7 +110,7 @@ public final class FtbSyncTeamCommand {
         GameProfile target = new GameProfile(targetId, targetName);
         MySQLBackend db = MySQLBackend.getInstance();
         requireDb(db);
-        MySQLBackend.TeamMembershipRow current = db.selectMembership(targetId).orElse(null);
+        TeamMembershipRow current = db.selectMembership(targetId).orElse(null);
         if (current != null && ctx.team().getId().equals(current.teamId())) throw ALREADY_MEMBER.create();
 
         TeamSync.getInstance().queueInvite(ctx.player(), (PartyTeam) ctx.team(), target);
@@ -118,10 +125,10 @@ public final class FtbSyncTeamCommand {
         MySQLBackend db = MySQLBackend.getInstance();
         requireDb(db);
         UUID partyTeamId = ctx.team().getId();
-        MySQLBackend.TeamInfoRow info = db.selectTeamInfo(partyTeamId).orElse(null);
+        TeamInfoRow info = db.selectTeamInfo(partyTeamId).orElse(null);
         UUID owner = info != null && info.owner() != null ? info.owner() : ctx.team().getOwner();
         if (targetId.equals(owner)) throw OWNER_KICK.create();
-        MySQLBackend.TeamMembershipRow membership = db.selectMembership(targetId).orElse(null);
+        TeamMembershipRow membership = db.selectMembership(targetId).orElse(null);
         if (membership == null || !partyTeamId.equals(membership.teamId())) throw NOT_MEMBER.create();
 
         db.upsertMembership(targetId, targetId, "OWNER");
@@ -154,7 +161,7 @@ public final class FtbSyncTeamCommand {
         GameProfile target = new GameProfile(targetId, targetName);
         MySQLBackend db = MySQLBackend.getInstance();
         requireDb(db);
-        MySQLBackend.TeamMembershipRow membership = db.selectMembership(targetId).orElse(null);
+        TeamMembershipRow membership = db.selectMembership(targetId).orElse(null);
         if (membership == null || !ctx.team().getId().equals(membership.teamId())) throw TRANSFER_NEEDS_MEMBER.create();
 
         TeamSync.getInstance().persistTeamNow(ctx.team());
@@ -165,7 +172,7 @@ public final class FtbSyncTeamCommand {
                 FTBQuestsSync.LOGGER.warn("Local owner_transfer reconcile DB reload failed team={}", ctx.team().getId(), err);
                 return;
             }
-            List<MySQLBackend.TeamMemberRow> members = state == null ? List.of() : state.members();
+            List<TeamMemberRow> members = state == null ? List.of() : state.members();
             ctx.server().execute(() -> applyOwnerTransferLocal(ctx.server(), source, ctx.team().getId(), target, members));
         });
         source.sendSuccess(() -> Component.literal("FTB Sync ownership transfer queued for " + target.getName()), false);
@@ -189,7 +196,7 @@ public final class FtbSyncTeamCommand {
     }
 
     public static void applyMemberKickLocal(MinecraftServer server, UUID teamId, UUID playerId,
-                                     MySQLBackend.TeamMaterializationRow row) {
+                                     TeamMaterializationRow row) {
         TeamManager mgr = FTBTeamsAPI.api().getManager();
         Team oldTeam = mgr.getTeamByID(teamId).orElse(null);
         ServerPlayer player = server.getPlayerList().getPlayer(playerId);
@@ -236,7 +243,7 @@ public final class FtbSyncTeamCommand {
     }
 
     public static void applyOwnerTransferLocal(MinecraftServer server, CommandSourceStack source, UUID teamId,
-                                        GameProfile newOwner, List<MySQLBackend.TeamMemberRow> members) {
+                                        GameProfile newOwner, List<TeamMemberRow> members) {
         TeamManager mgr = FTBTeamsAPI.api().getManager();
         if (!TeamMaterializer.ensureTeamMaterialized(teamId)) return;
         Team team = mgr.getTeamByID(teamId).orElse(null);
@@ -253,7 +260,7 @@ public final class FtbSyncTeamCommand {
         if (player != null) TeamSync.getInstance().forceFullSyncToPlayer(player, teamId);
     }
 
-    private static Team resolveDbTeam(TeamManager mgr, MySQLBackend.TeamMaterializationRow row,
+    private static Team resolveDbTeam(TeamManager mgr, TeamMaterializationRow row,
                                       UUID playerId, boolean playerOnline) {
         if (row == null || row.membership() == null) return null;
         UUID dbTeamId = row.membership().teamId();
@@ -264,7 +271,7 @@ public final class FtbSyncTeamCommand {
         if (!TeamMaterializer.ensureTeamMaterialized(dbTeamId)) return null;
         Team dbTeam = mgr.getTeamByID(dbTeamId).orElse(null);
         if (dbTeam != null) {
-            for (MySQLBackend.TeamMemberRow member : row.members()) {
+            for (TeamMemberRow member : row.members()) {
                 TeamMaterializer.addPlayerToTeamReflective(dbTeam, member.playerUuid(), member.rank());
             }
         }

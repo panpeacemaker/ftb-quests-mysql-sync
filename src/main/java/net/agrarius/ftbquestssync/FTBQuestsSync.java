@@ -22,6 +22,9 @@ import net.agrarius.ftbquestssync.migration.MigrationCommand;
 import net.agrarius.ftbquestssync.chunks.ChunkSync;
 import net.agrarius.ftbquestssync.chunks.ChunkMaterializer;
 import net.agrarius.ftbquestssync.chunks.ChunkSeeder;
+import net.agrarius.ftbquestssync.teams.MembershipCache;
+import net.agrarius.ftbquestssync.teams.PresenceSync;
+import net.agrarius.ftbquestssync.teams.TeamSync;
 
 @Mod(FTBQuestsSync.MOD_ID)
 public class FTBQuestsSync {

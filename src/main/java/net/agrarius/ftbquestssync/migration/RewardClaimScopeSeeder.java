@@ -2,7 +2,7 @@ package net.agrarius.ftbquestssync.migration;
 
 import net.agrarius.ftbquestssync.Config;
 import net.agrarius.ftbquestssync.FTBQuestsSync;
-import net.agrarius.ftbquestssync.MembershipCache;
+import net.agrarius.ftbquestssync.teams.MembershipCache;
 import net.agrarius.ftbquestssync.MySQLBackend;
 import net.minecraft.nbt.CompoundTag;
 
