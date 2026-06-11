@@ -3,7 +3,7 @@ package net.agrarius.ftbquestssync.mixin;
 import com.mojang.authlib.GameProfile;
 import dev.ftb.mods.ftbteams.api.Team;
 import dev.ftb.mods.ftbteams.data.PartyTeam;
-import net.agrarius.ftbquestssync.Config;
+import net.agrarius.ftbquestssync.config.Config;
 import net.agrarius.ftbquestssync.teams.TeamMutationGuard;
 import net.agrarius.ftbquestssync.teams.TeamSync;
 import net.minecraft.commands.CommandSourceStack;

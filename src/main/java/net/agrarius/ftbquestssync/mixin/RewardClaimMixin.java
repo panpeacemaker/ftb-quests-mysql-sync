@@ -1,10 +1,10 @@
 package net.agrarius.ftbquestssync.mixin;
 
 import net.agrarius.ftbquestssync.FTBQuestsSync;
-import net.agrarius.ftbquestssync.Config;
 import net.agrarius.ftbquestssync.MySQLBackend;
-import net.agrarius.ftbquestssync.ShopCycleReset;
-import net.agrarius.ftbquestssync.ShopRepeatableSync;
+import net.agrarius.ftbquestssync.config.Config;
+import net.agrarius.ftbquestssync.quests.rank.ShopCycleReset;
+import net.agrarius.ftbquestssync.quests.rank.ShopRepeatableSync;
 import dev.ftb.mods.ftbquests.quest.BaseQuestFile;
 import dev.ftb.mods.ftbquests.quest.Quest;
 import dev.ftb.mods.ftbquests.quest.TeamData;
@@ -22,7 +22,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.util.UUID;
 import net.agrarius.ftbquestssync.RedisSync;
-import net.agrarius.ftbquestssync.RankSoloProgress;
+import net.agrarius.ftbquestssync.quests.rank.RankSoloProgress;
 import dev.ftb.mods.ftbquests.quest.reward.RewardClaimType;
 import net.minecraft.nbt.CompoundTag;
 import dev.ftb.mods.ftblibrary.snbt.SNBTCompoundTag;

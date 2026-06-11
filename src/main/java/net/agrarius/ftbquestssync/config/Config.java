@@ -1,4 +1,7 @@
-package net.agrarius.ftbquestssync;
+package net.agrarius.ftbquestssync.config;
+
+import net.agrarius.ftbquestssync.FTBQuestsSync;
+import net.agrarius.ftbquestssync.chunks.RankBonusResolver;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -8,8 +11,6 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-
-import net.agrarius.ftbquestssync.chunks.RankBonusResolver;
 
 /**
  * Config loaded from /opt/agrarius/config/ftbquestssync-server.toml.
@@ -127,7 +128,7 @@ public final class Config {
     private Config() {
     }
 
-    static void reload() {
+    public static void reload() {
         Map<String, String> toml = readToml(Path.of("/opt/agrarius/config/ftbquestssync-server.toml"));
 
         mysqlHost = prop("ftbquestssync.mysql.host", toml.getOrDefault("host", mysqlHost));

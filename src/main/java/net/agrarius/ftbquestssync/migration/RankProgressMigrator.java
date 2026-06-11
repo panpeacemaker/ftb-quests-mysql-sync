@@ -12,14 +12,14 @@ import java.util.UUID;
  *
  * <p>The runtime keeps solo/rank progress per player in a dedicated table, not
  * in the team blob: every team-blob save runs through
- * {@link net.agrarius.ftbquestssync.RankSoloProgress#stripRankSharedProgress(CompoundTag)}
+ * {@link net.agrarius.ftbquestssync.quests.rank.RankSoloProgress#stripRankSharedProgress(CompoundTag)}
  * which deletes solo task/quest entries from the blob. The legacy export stores everything in
  * one flat {@code task_progress}/{@code completed} blob keyed by task id only,
  * so without this step the solo progress would be stripped on the first save
  * and never replayed (the {@code rank_progress} table would stay empty).
  *
  * <p>Must run after the quest file is loaded so the policy scan
- * ({@link net.agrarius.ftbquestssync.RankSoloProgress#isRankTask}, {@link net.agrarius.ftbquestssync.RankSoloProgress#questIdForTask})
+ * ({@link net.agrarius.ftbquestssync.quests.rank.RankSoloProgress#isRankTask}, {@link net.agrarius.ftbquestssync.quests.rank.RankSoloProgress#questIdForTask})
  * is available to classify tasks and resolve their owning quest.
  */
 public final class RankProgressMigrator {

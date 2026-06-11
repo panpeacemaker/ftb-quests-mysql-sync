@@ -1,5 +1,9 @@
 package net.agrarius.ftbquestssync;
 
+import net.agrarius.ftbquestssync.command.FtbSyncTeamCommand;
+import net.agrarius.ftbquestssync.config.Config;
+import net.agrarius.ftbquestssync.quests.rank.RankSoloProgress;
+
 import dev.architectury.event.events.common.LifecycleEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.entity.player.PlayerEvent;

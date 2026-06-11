@@ -1,6 +1,6 @@
 package net.agrarius.ftbquestssync.migration;
 
-import net.agrarius.ftbquestssync.Config;
+import net.agrarius.ftbquestssync.config.Config;
 import net.agrarius.ftbquestssync.FTBQuestsSync;
 import net.agrarius.ftbquestssync.teams.MembershipCache;
 import net.agrarius.ftbquestssync.MySQLBackend;

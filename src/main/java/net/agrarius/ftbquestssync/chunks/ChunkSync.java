@@ -1,10 +1,10 @@
 package net.agrarius.ftbquestssync.chunks;
 
-import net.agrarius.ftbquestssync.Config;
 import net.agrarius.ftbquestssync.FTBQuestsSync;
 import net.agrarius.ftbquestssync.MySQLBackend;
 import net.agrarius.ftbquestssync.RedisSync;
-import net.agrarius.ftbquestssync.TeamLoadStateRegistry;
+import net.agrarius.ftbquestssync.config.Config;
+import net.agrarius.ftbquestssync.quests.TeamLoadStateRegistry;
 
 import dev.architectury.event.CompoundEventResult;
 import dev.ftb.mods.ftbchunks.api.ClaimResult;

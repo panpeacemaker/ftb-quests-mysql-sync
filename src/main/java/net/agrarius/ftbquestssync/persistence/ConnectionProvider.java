@@ -2,7 +2,7 @@ package net.agrarius.ftbquestssync.persistence;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
-import net.agrarius.ftbquestssync.Config;
+import net.agrarius.ftbquestssync.config.Config;
 
 import java.sql.Connection;
 import java.sql.SQLException;

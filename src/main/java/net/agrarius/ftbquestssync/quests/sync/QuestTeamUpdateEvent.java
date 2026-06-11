@@ -1,4 +1,4 @@
-package net.agrarius.ftbquestssync;
+package net.agrarius.ftbquestssync.quests.sync;
 
 import com.google.gson.annotations.SerializedName;
 

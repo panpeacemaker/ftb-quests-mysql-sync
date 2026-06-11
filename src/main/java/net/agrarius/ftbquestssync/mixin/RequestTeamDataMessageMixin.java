@@ -1,9 +1,9 @@
 package net.agrarius.ftbquestssync.mixin;
 
 import dev.architectury.networking.NetworkManager;
-import net.agrarius.ftbquestssync.Config;
 import net.agrarius.ftbquestssync.FTBQuestsSync;
-import net.agrarius.ftbquestssync.RankSoloProgress;
+import net.agrarius.ftbquestssync.config.Config;
+import net.agrarius.ftbquestssync.quests.rank.RankSoloProgress;
 import dev.ftb.mods.ftbquests.net.RequestTeamDataMessage;
 import net.minecraft.server.level.ServerPlayer;
 import org.spongepowered.asm.mixin.Mixin;

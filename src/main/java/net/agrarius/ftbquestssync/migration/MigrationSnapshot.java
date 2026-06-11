@@ -7,7 +7,7 @@ import dev.ftb.mods.ftbquests.quest.Quest;
 import dev.ftb.mods.ftbquests.quest.reward.Reward;
 import dev.ftb.mods.ftbquests.quest.task.Task;
 import net.agrarius.ftbquestssync.FTBQuestsSync;
-import net.agrarius.ftbquestssync.RankSoloProgress;
+import net.agrarius.ftbquestssync.quests.rank.RankSoloProgress;
 
 import java.util.Collections;
 import java.util.HashMap;

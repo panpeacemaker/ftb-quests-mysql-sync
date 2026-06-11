@@ -1,9 +1,9 @@
-package net.agrarius.ftbquestssync.quests;
+package net.agrarius.ftbquestssync.quests.reward.repository;
 
-import net.agrarius.ftbquestssync.Config;
 import net.agrarius.ftbquestssync.FTBQuestsSync;
 import net.agrarius.ftbquestssync.MySQLBackend;
 import net.agrarius.ftbquestssync.RedisSync;
+import net.agrarius.ftbquestssync.config.Config;
 import net.agrarius.ftbquestssync.persistence.ConnectionProvider;
 
 import java.sql.Connection;

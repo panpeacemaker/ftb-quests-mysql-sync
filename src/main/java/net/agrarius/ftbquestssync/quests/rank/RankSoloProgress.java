@@ -1,4 +1,8 @@
-package net.agrarius.ftbquestssync;
+package net.agrarius.ftbquestssync.quests.rank;
+
+import net.agrarius.ftbquestssync.FTBQuestsSync;
+import net.agrarius.ftbquestssync.MySQLBackend;
+import net.agrarius.ftbquestssync.config.Config;
 
 import dev.ftb.mods.ftbquests.api.FTBQuestsAPI;
 import dev.ftb.mods.ftbquests.net.ObjectCompletedMessage;

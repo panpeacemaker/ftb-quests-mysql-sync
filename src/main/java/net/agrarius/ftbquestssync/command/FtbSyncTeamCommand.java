@@ -1,4 +1,18 @@
-package net.agrarius.ftbquestssync;
+package net.agrarius.ftbquestssync.command;
+
+import net.agrarius.ftbquestssync.FTBQuestsSync;
+import net.agrarius.ftbquestssync.MySQLBackend;
+import net.agrarius.ftbquestssync.RedisSync;
+import net.agrarius.ftbquestssync.config.Config;
+import net.agrarius.ftbquestssync.chunks.ChunkLimitPatcher;
+import net.agrarius.ftbquestssync.chunks.RankBonusResolver;
+import net.agrarius.ftbquestssync.teams.TeamMaterializer;
+import net.agrarius.ftbquestssync.teams.TeamMutationGuard;
+import net.agrarius.ftbquestssync.teams.TeamSync;
+import net.agrarius.ftbquestssync.teams.model.TeamInfoRow;
+import net.agrarius.ftbquestssync.teams.model.TeamMaterializationRow;
+import net.agrarius.ftbquestssync.teams.model.TeamMemberRow;
+import net.agrarius.ftbquestssync.teams.model.TeamMembershipRow;
 
 import com.mojang.authlib.GameProfile;
 import com.mojang.brigadier.Command;
@@ -19,16 +33,6 @@ import net.minecraft.server.level.ServerPlayer;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-
-import net.agrarius.ftbquestssync.chunks.ChunkLimitPatcher;
-import net.agrarius.ftbquestssync.chunks.RankBonusResolver;
-import net.agrarius.ftbquestssync.teams.TeamMaterializer;
-import net.agrarius.ftbquestssync.teams.TeamMutationGuard;
-import net.agrarius.ftbquestssync.teams.TeamSync;
-import net.agrarius.ftbquestssync.teams.model.TeamInfoRow;
-import net.agrarius.ftbquestssync.teams.model.TeamMaterializationRow;
-import net.agrarius.ftbquestssync.teams.model.TeamMemberRow;
-import net.agrarius.ftbquestssync.teams.model.TeamMembershipRow;
 
 public final class FtbSyncTeamCommand {
 

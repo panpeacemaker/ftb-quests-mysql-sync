@@ -1,8 +1,8 @@
 package net.agrarius.ftbquestssync.mixin;
 
-import net.agrarius.ftbquestssync.RankSoloProgress;
-import net.agrarius.ftbquestssync.Config;
 import net.agrarius.ftbquestssync.FTBQuestsSync;
+import net.agrarius.ftbquestssync.config.Config;
+import net.agrarius.ftbquestssync.quests.rank.RankSoloProgress;
 import dev.ftb.mods.ftbquests.quest.BaseQuestFile;
 import dev.ftb.mods.ftbquests.quest.Quest;
 import dev.ftb.mods.ftbquests.quest.QuestObject;

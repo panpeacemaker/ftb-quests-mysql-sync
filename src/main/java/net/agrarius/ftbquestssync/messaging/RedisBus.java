@@ -1,6 +1,6 @@
 package net.agrarius.ftbquestssync.messaging;
 
-import net.agrarius.ftbquestssync.Config;
+import net.agrarius.ftbquestssync.config.Config;
 import net.agrarius.ftbquestssync.FTBQuestsSync;
 
 import org.apache.commons.pool2.impl.GenericObjectPoolConfig;

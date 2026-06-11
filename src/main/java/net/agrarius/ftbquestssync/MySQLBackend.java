@@ -2,10 +2,14 @@ package net.agrarius.ftbquestssync;
 
 import net.minecraft.nbt.CompoundTag;
 
+import net.agrarius.ftbquestssync.config.Config;
+import net.agrarius.ftbquestssync.nbt.NbtCompat;
 import net.agrarius.ftbquestssync.persistence.ConnectionProvider;
 import net.agrarius.ftbquestssync.persistence.SchemaManager;
-import net.agrarius.ftbquestssync.quests.RankProgressRepository;
-import net.agrarius.ftbquestssync.quests.RewardClaimRepository;
+import net.agrarius.ftbquestssync.quests.TeamLoadStateRegistry;
+import net.agrarius.ftbquestssync.quests.rank.RankSoloProgress;
+import net.agrarius.ftbquestssync.quests.rank.repository.RankProgressRepository;
+import net.agrarius.ftbquestssync.quests.reward.repository.RewardClaimRepository;
 import net.agrarius.ftbquestssync.chunks.ChunkClaimRecord;
 import net.agrarius.ftbquestssync.chunks.ChunkClaimRepository;
 import net.agrarius.ftbquestssync.teams.model.TeamInfoRow;

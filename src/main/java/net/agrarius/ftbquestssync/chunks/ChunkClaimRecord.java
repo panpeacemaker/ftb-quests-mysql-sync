@@ -1,6 +1,6 @@
 package net.agrarius.ftbquestssync.chunks;
 
-import net.agrarius.ftbquestssync.Config;
+import net.agrarius.ftbquestssync.config.Config;
 
 import dev.ftb.mods.ftbchunks.api.ClaimedChunk;
 import dev.ftb.mods.ftblibrary.math.ChunkDimPos;

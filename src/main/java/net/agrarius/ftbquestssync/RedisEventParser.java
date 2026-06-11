@@ -1,5 +1,7 @@
 package net.agrarius.ftbquestssync;
 
+import net.agrarius.ftbquestssync.quests.sync.QuestTeamUpdateEvent;
+
 import com.google.gson.Gson;
 
 import java.nio.charset.StandardCharsets;
