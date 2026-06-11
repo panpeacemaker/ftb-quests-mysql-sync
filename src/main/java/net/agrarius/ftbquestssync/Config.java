@@ -33,9 +33,9 @@ public final class Config {
     public static boolean mysqlUseSsl = true;
     public static boolean mysqlAllowPublicKeyRetrieval = false;
 
-    public static String redisHost = "127.0.0.1";
-    public static int redisPort = 6379;
-    public static String redisPassword = "";
+    static String redisHost = "127.0.0.1";
+    static int redisPort = 6379;
+    static String redisPassword = "";
 
     public static boolean syncQuests = true;
     public static boolean syncTeams = false;
