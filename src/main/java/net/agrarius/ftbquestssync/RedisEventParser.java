@@ -6,14 +6,14 @@ import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 
 /**
- * Package-private parser for Redis pub/sub payloads.
+ * Parser for Redis pub/sub payloads.
  * Contains no Minecraft/Forge dependencies so it can be unit-tested headlessly.
  */
-class RedisEventParser {
+public class RedisEventParser {
 
-    static final Gson GSON = new Gson();
+    public static final Gson GSON = new Gson();
 
-    static QuestTeamUpdateEvent parseQuestEvent(String payload) {
+    public static QuestTeamUpdateEvent parseQuestEvent(String payload) {
         try {
             return GSON.fromJson(payload, QuestTeamUpdateEvent.class);
         } catch (Exception e) {
@@ -21,7 +21,7 @@ class RedisEventParser {
         }
     }
 
-    static ChunkClaimsUpdateEvent parseChunkEvent(String payload) {
+    public static ChunkClaimsUpdateEvent parseChunkEvent(String payload) {
         try {
             return GSON.fromJson(payload, ChunkClaimsUpdateEvent.class);
         } catch (Exception e) {
@@ -29,7 +29,7 @@ class RedisEventParser {
         }
     }
 
-    static boolean isLegacyChunkPayload(String payload) {
+    public static boolean isLegacyChunkPayload(String payload) {
         if (payload == null) return false;
         String[] parts = payload.split("\\|", 4);
         return parts.length >= 4 && parts[1].startsWith("chunks_");
@@ -39,7 +39,7 @@ class RedisEventParser {
      * Parses a legacy pipe-delimited chunk payload.
      * Format: {@code serverId|reason|teamId|-}
      */
-    static ChunkClaimsUpdateEvent parseLegacyChunkEvent(String payload) {
+    public static ChunkClaimsUpdateEvent parseLegacyChunkEvent(String payload) {
         String[] parts = payload.split("\\|", 4);
         if (parts.length < 4 || !parts[1].startsWith("chunks_")) {
             return null;
@@ -57,7 +57,7 @@ class RedisEventParser {
      * Returns a {@link QuestTeamUpdateEvent} with a deterministic {@code eventId}
      * derived from the raw payload so deduplication actually works.
      */
-    static QuestTeamUpdateEvent parseLegacyQuestEvent(String payload) {
+    public static QuestTeamUpdateEvent parseLegacyQuestEvent(String payload) {
         String trimmed = payload.trim();
         if (trimmed.startsWith("{")) {
             return null;
@@ -90,7 +90,7 @@ class RedisEventParser {
      * Fixes issue #31: identical legacy messages now share the same eventId,
      * so the {@code seenEvents} dedup set can suppress duplicates.
      */
-    static UUID deterministicEventId(String payload) {
+    public static UUID deterministicEventId(String payload) {
         return UUID.nameUUIDFromBytes(payload.getBytes(StandardCharsets.UTF_8));
     }
 }

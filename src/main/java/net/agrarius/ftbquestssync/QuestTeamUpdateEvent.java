@@ -9,7 +9,7 @@ import java.util.UUID;
  * Field names are kept identical to the legacy hand-rolled JSON wire format
  * so old nodes can parse messages from new nodes.
  */
-record QuestTeamUpdateEvent(
+public record QuestTeamUpdateEvent(
         @SerializedName("eventId") UUID eventId,
         @SerializedName("sourceServer") String sourceServer,
         @SerializedName("entityType") String entityType,
