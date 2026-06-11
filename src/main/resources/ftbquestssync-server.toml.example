@@ -37,6 +37,10 @@ syncSoloProgressPerPlayer = true
 soloRewardsPerPlayer = true
 teamRewardsDedupGlobal = true
 rewardFailClosed = true
+# Per-rank bonus force-load chunks for /ftbsync chunks setranks <player> <ranks>.
+# Format: list of "rank=count" strings. Matching is case-insensitive.
+# rankBonuses = ["ev=1", "premium=1", "sponzor=3", "donator=5"]
+rankBonuses = []
 
 # Optional: one-shot import of legacy per-player player data
 # (per-player ZIPs containing a `quests.snbt` entry). Runs on the first

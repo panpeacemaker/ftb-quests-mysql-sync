@@ -9,6 +9,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
+import net.agrarius.ftbquestssync.chunks.RankBonusResolver;
+
 /**
  * Config loaded from /opt/agrarius/config/ftbquestssync-server.toml.
  * System properties (`-D…`) override TOML values.
@@ -59,6 +61,7 @@ public final class Config {
     public static boolean soloRewardsPerPlayer = true;
     public static boolean teamRewardsDedupGlobal = true;
     public static boolean rewardFailClosed = true;
+    public static Map<String, Integer> rankBonuses = Map.of();
 
     // -- Legacy per-player quest-data auto-migration --
     // See net.agrarius.ftbquestssync.migration.LegacyQuestMigrator for the
@@ -163,6 +166,7 @@ public final class Config {
         soloRewardsPerPlayer = boolProp("ftbquestssync.policy.soloRewardsPerPlayer", toml.getOrDefault("soloRewardsPerPlayer", String.valueOf(soloRewardsPerPlayer)), soloRewardsPerPlayer);
         teamRewardsDedupGlobal = boolProp("ftbquestssync.policy.teamRewardsDedupGlobal", toml.getOrDefault("teamRewardsDedupGlobal", String.valueOf(teamRewardsDedupGlobal)), teamRewardsDedupGlobal);
         rewardFailClosed = boolProp("ftbquestssync.policy.rewardFailClosed", toml.getOrDefault("rewardFailClosed", String.valueOf(rewardFailClosed)), rewardFailClosed);
+        rankBonuses = rankBonusMapProp("ftbquestssync.policy.rankBonuses", toml.get("rankBonuses"), rankBonuses);
 
         // readToml() drops [section] headers and flattens to bare keys, so
         // these lookups use the bare names from the .toml.example (e.g.
@@ -209,9 +213,9 @@ public final class Config {
                 syncQuests, syncTeams, syncChunks, chunkSeedOnStart, chunkCanonicalServerId, chunkForceLoadSync,
                 sendFullTeamData);
         FTBQuestsSync.LOGGER.info(
-                "Policy loaded: mode={} soloChapterIds={} repeatableSoloChapterIds={} soloQuestIds={} soloTaskIds={} syncSoloProgressPerPlayer={} soloRewardsPerPlayer={} teamRewardsDedupGlobal={} rewardFailClosed={}",
+                "Policy loaded: mode={} soloChapterIds={} repeatableSoloChapterIds={} soloQuestIds={} soloTaskIds={} syncSoloProgressPerPlayer={} soloRewardsPerPlayer={} teamRewardsDedupGlobal={} rewardFailClosed={} rankBonuses={}",
                 policyMode, soloChapterIds, repeatableSoloChapterIds, soloQuestIds, soloTaskIds,
-                syncSoloProgressPerPlayer, soloRewardsPerPlayer, teamRewardsDedupGlobal, rewardFailClosed);
+                syncSoloProgressPerPlayer, soloRewardsPerPlayer, teamRewardsDedupGlobal, rewardFailClosed, rankBonuses);
 
         if (serverId.startsWith("unknown-")) {
             FTBQuestsSync.LOGGER.warn(
@@ -277,6 +281,12 @@ public final class Config {
             }
         }
         return parsed;
+    }
+
+    private static Map<String, Integer> rankBonusMapProp(String key, String tomlValue, Map<String, Integer> fallback) {
+        String raw = System.getProperty(key, tomlValue == null ? null : tomlValue);
+        if (raw == null || raw.isBlank()) return fallback;
+        return RankBonusResolver.parseConfig(raw);
     }
 
     private static long parseLongId(String token) {
