@@ -8,6 +8,16 @@ import net.agrarius.ftbquestssync.quests.RankProgressRepository;
 import net.agrarius.ftbquestssync.quests.RewardClaimRepository;
 import net.agrarius.ftbquestssync.chunks.ChunkClaimRecord;
 import net.agrarius.ftbquestssync.chunks.ChunkClaimRepository;
+import net.agrarius.ftbquestssync.teams.model.TeamInfoRow;
+import net.agrarius.ftbquestssync.teams.model.TeamInviteRow;
+import net.agrarius.ftbquestssync.teams.model.TeamMaterializationRow;
+import net.agrarius.ftbquestssync.teams.model.TeamMemberRow;
+import net.agrarius.ftbquestssync.teams.model.TeamMembershipRow;
+import net.agrarius.ftbquestssync.teams.model.TeamStateRow;
+import net.agrarius.ftbquestssync.teams.repository.InviteRepository;
+import net.agrarius.ftbquestssync.teams.repository.MembershipRepository;
+import net.agrarius.ftbquestssync.teams.repository.PlayerNameRepository;
+import net.agrarius.ftbquestssync.teams.repository.TeamInfoRepository;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -82,79 +92,11 @@ public class MySQLBackend {
             + "SELECT scope_type, ?, reward_id, cycle, state, team_id, claimed_at_ms, granted_by_server "
             + "FROM ftbquests_reward_claim_scopes WHERE scope_type='TEAM' AND scope_uuid=?";
 
-    private static final String SQL_UPSERT_TEAM_INFO =
-            "INSERT INTO ftbquests_team_info (team_id, team_type, team_name, owner_uuid, team_color, deleted, updated_by_server) "
-            + "VALUES (?, ?, ?, ?, ?, 0, ?) "
-            + "ON DUPLICATE KEY UPDATE team_type=VALUES(team_type), team_name=VALUES(team_name), "
-            + "owner_uuid=VALUES(owner_uuid), team_color=VALUES(team_color), deleted=0, updated_by_server=VALUES(updated_by_server)";
-
-    private static final String SQL_UPSERT_TEAM_INFO_NO_OWNER =
-            "INSERT INTO ftbquests_team_info (team_id, team_type, team_name, owner_uuid, team_color, deleted, updated_by_server) "
-            + "VALUES (?, ?, ?, ?, ?, 0, ?) "
-            + "ON DUPLICATE KEY UPDATE team_type=VALUES(team_type), team_name=VALUES(team_name), "
-            + "team_color=VALUES(team_color), deleted=0, updated_by_server=VALUES(updated_by_server)";
-
-    private static final String SQL_MARK_TEAM_DELETED =
-            "UPDATE ftbquests_team_info SET deleted=1, updated_by_server=? WHERE team_id=?";
-
     private static final String SQL_UPSERT_MEMBERSHIP =
             "INSERT INTO ftbquests_team_membership (player_uuid, team_id, rank, updated_by_server) "
             + "VALUES (?, ?, ?, ?) "
             + "ON DUPLICATE KEY UPDATE team_id=VALUES(team_id), rank=VALUES(rank), "
             + "updated_by_server=VALUES(updated_by_server)";
-
-    private static final String SQL_UPSERT_PLAYER_NAME =
-            "INSERT INTO ftbquests_player_names (player_uuid, player_name) "
-            + "VALUES (?, ?) ON DUPLICATE KEY UPDATE player_name=VALUES(player_name)";
-
-    private static final String SQL_SELECT_PLAYER_UUID_BY_NAME =
-            "SELECT player_uuid FROM ftbquests_player_names "
-            + "WHERE LOWER(player_name) = LOWER(?) ORDER BY updated_at DESC LIMIT 1";
-
-    private static final String SQL_SELECT_PLAYER_NAME_BY_UUID =
-            "SELECT player_name FROM ftbquests_player_names WHERE player_uuid = ?";
-
-    private static final String SQL_UPSERT_OWN_PLAYER_MEMBERSHIP_IF_ABSENT_OR_SELF =
-            "INSERT INTO ftbquests_team_membership (player_uuid, team_id, rank, updated_by_server) "
-            + "VALUES (?, ?, ?, ?) "
-            + "ON DUPLICATE KEY UPDATE "
-            + "rank=IF(team_id=VALUES(team_id), VALUES(rank), rank), "
-            + "updated_by_server=IF(team_id=VALUES(team_id), VALUES(updated_by_server), updated_by_server)";
-
-    private static final String SQL_SELECT_MEMBERSHIP =
-            "SELECT team_id, rank FROM ftbquests_team_membership WHERE player_uuid = ?";
-
-    private static final String SQL_SELECT_MEMBERS_OF_TEAM =
-            "SELECT player_uuid, rank FROM ftbquests_team_membership WHERE team_id = ?";
-
-    private static final String SQL_SELECT_TEAM_INFO =
-            "SELECT team_type, team_name, owner_uuid, deleted, team_color FROM ftbquests_team_info WHERE team_id = ?";
-
-    private static final String SQL_UPDATE_TEAM_OWNER =
-            "UPDATE ftbquests_team_info SET owner_uuid=?, deleted=0, updated_by_server=? WHERE team_id=?";
-
-    private static final String SQL_DEMOTE_OTHER_OWNERS =
-            "UPDATE ftbquests_team_membership SET rank='OFFICER', updated_by_server=? WHERE team_id=? AND player_uuid<>? AND rank='OWNER'";
-
-    private static final String SQL_UPSERT_INVITE =
-            "INSERT INTO ftbquests_team_invites (team_id, invited_uuid, inviter_uuid, updated_by_server) "
-            + "VALUES (?, ?, ?, ?) "
-            + "ON DUPLICATE KEY UPDATE inviter_uuid=VALUES(inviter_uuid), updated_by_server=VALUES(updated_by_server)";
-
-    private static final String SQL_DELETE_INVITE =
-            "DELETE FROM ftbquests_team_invites WHERE team_id=? AND invited_uuid=?";
-
-    private static final String SQL_DELETE_INVITES_FOR_TEAM =
-            "DELETE FROM ftbquests_team_invites WHERE team_id=?";
-
-    private static final String SQL_SELECT_INVITE =
-            "SELECT team_id, invited_uuid, inviter_uuid FROM ftbquests_team_invites WHERE team_id=? AND invited_uuid=?";
-
-    private static final String SQL_SELECT_INVITES_FOR_TEAM =
-            "SELECT team_id, invited_uuid, inviter_uuid FROM ftbquests_team_invites WHERE team_id=?";
-
-    private static final String SQL_SELECT_INVITES_FOR_PLAYER =
-            "SELECT team_id, invited_uuid, inviter_uuid FROM ftbquests_team_invites WHERE invited_uuid=?";
 
     private static final String SQL_SELECT_MIGRATED_TEAM_IDS =
             "SELECT team_id FROM ftbquests_teamdata WHERE server_id = ?";
@@ -166,6 +108,10 @@ public class MySQLBackend {
     private RewardClaimRepository rewardClaimRepository;
     private RankProgressRepository rankProgressRepository;
     private ChunkClaimRepository chunkClaimRepository;
+    private TeamInfoRepository teamInfoRepository;
+    private MembershipRepository membershipRepository;
+    private InviteRepository inviteRepository;
+    private PlayerNameRepository playerNameRepository;
     private volatile boolean initialized;
     private final ExecutorService dbExecutor = new ThreadPoolExecutor(
             1,
@@ -207,6 +153,10 @@ public class MySQLBackend {
             rewardClaimRepository = new RewardClaimRepository(connectionProvider);
             rankProgressRepository = new RankProgressRepository(connectionProvider);
             chunkClaimRepository = new ChunkClaimRepository(connectionProvider);
+            teamInfoRepository = new TeamInfoRepository(connectionProvider);
+            membershipRepository = new MembershipRepository(connectionProvider);
+            inviteRepository = new InviteRepository(connectionProvider);
+            playerNameRepository = new PlayerNameRepository(connectionProvider);
             new SchemaManager(connectionProvider).ensureSchema();
             initialized = true;
 
@@ -852,24 +802,9 @@ public class MySQLBackend {
     public void upsertTeamInfo(UUID teamId, String type, String name, UUID owner, String color) {
         if (!isAvailable()) return;
         try {
-            upsertTeamInfoOrThrow(teamId, type, name, owner, color);
+            teamInfoRepository.upsertTeamInfo(teamId, type, name, owner, color);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.error("upsertTeamInfo failed for {}", teamId, e);
-        }
-    }
-
-    private void upsertTeamInfoOrThrow(UUID teamId, String type, String name, UUID owner, String color) throws Exception {
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_UPSERT_TEAM_INFO)) {
-            ps.setString(1, teamId.toString());
-            ps.setString(2, type);
-            ps.setString(3, name);
-            ps.setString(4, owner == null ? null : owner.toString());
-            ps.setString(5, color);
-            ps.setString(6, RedisSync.getInstance().getServerId());
-            int rows = ps.executeUpdate();
-            FTBQuestsSync.LOGGER.info("Team info upsert: id={} type={} name={} owner={} color={} rows={}",
-                    teamId, type, name, owner, color, rows);
         }
     }
 
@@ -885,24 +820,9 @@ public class MySQLBackend {
     public void upsertTeamInfoNoOwner(UUID teamId, String type, String name, UUID owner, String color) {
         if (!isAvailable()) return;
         try {
-            upsertTeamInfoNoOwnerOrThrow(teamId, type, name, owner, color);
+            teamInfoRepository.upsertTeamInfoNoOwner(teamId, type, name, owner, color);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.error("upsertTeamInfoNoOwner failed for {}", teamId, e);
-        }
-    }
-
-    private void upsertTeamInfoNoOwnerOrThrow(UUID teamId, String type, String name, UUID owner, String color) throws Exception {
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_UPSERT_TEAM_INFO_NO_OWNER)) {
-            ps.setString(1, teamId.toString());
-            ps.setString(2, type);
-            ps.setString(3, name);
-            ps.setString(4, owner == null ? null : owner.toString());
-            ps.setString(5, color);
-            ps.setString(6, RedisSync.getInstance().getServerId());
-            int rows = ps.executeUpdate();
-            FTBQuestsSync.LOGGER.info("Team info upsert (no-owner): id={} type={} name={} color={} rows={}",
-                    teamId, type, name, color, rows);
         }
     }
 
@@ -918,13 +838,7 @@ public class MySQLBackend {
     public CompletableFuture<Void> upsertTeamInfoNoOwnerFuture(UUID teamId, String type, String name, UUID owner, String color) {
         if (!isAvailable()) return CompletableFuture.failedFuture(new IllegalStateException("MySQL unavailable"));
         try {
-            return CompletableFuture.runAsync(() -> {
-                try {
-                    upsertTeamInfoNoOwnerOrThrow(teamId, type, name, owner, color);
-                } catch (Exception e) {
-                    throw new CompletionException(e);
-                }
-            }, dbExecutor);
+            return CompletableFuture.runAsync(() -> teamInfoRepository.upsertTeamInfoNoOwner(teamId, type, name, owner, color), dbExecutor);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("DB queue full; cannot upsert team info {}", teamId, e);
             return CompletableFuture.failedFuture(e);
@@ -934,13 +848,7 @@ public class MySQLBackend {
     public CompletableFuture<Void> upsertTeamInfoFuture(UUID teamId, String type, String name, UUID owner, String color) {
         if (!isAvailable()) return CompletableFuture.failedFuture(new IllegalStateException("MySQL unavailable"));
         try {
-            return CompletableFuture.runAsync(() -> {
-                try {
-                    upsertTeamInfoOrThrow(teamId, type, name, owner, color);
-                } catch (Exception e) {
-                    throw new CompletionException(e);
-                }
-            }, dbExecutor);
+            return CompletableFuture.runAsync(() -> teamInfoRepository.upsertTeamInfo(teamId, type, name, owner, color), dbExecutor);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("DB queue full; cannot upsert team info {}", teamId, e);
             return CompletableFuture.failedFuture(e);
@@ -949,12 +857,8 @@ public class MySQLBackend {
 
     public void markTeamDeleted(UUID teamId) {
         if (!isAvailable()) return;
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_MARK_TEAM_DELETED)) {
-            ps.setString(1, RedisSync.getInstance().getServerId());
-            ps.setString(2, teamId.toString());
-            ps.executeUpdate();
-            FTBQuestsSync.LOGGER.info("Team marked deleted: id={}", teamId);
+        try {
+            teamInfoRepository.markTeamDeleted(teamId);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.error("markTeamDeleted failed for {}", teamId, e);
         }
@@ -972,35 +876,16 @@ public class MySQLBackend {
     public void upsertMembership(UUID playerUuid, UUID teamId, String rank) {
         if (!isAvailable()) return;
         try {
-            upsertMembershipOrThrow(playerUuid, teamId, rank);
+            membershipRepository.upsertMembership(playerUuid, teamId, rank);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.error("upsertMembership failed for player={} team={}", playerUuid, teamId, e);
-        }
-    }
-
-    private void upsertMembershipOrThrow(UUID playerUuid, UUID teamId, String rank) throws Exception {
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_UPSERT_MEMBERSHIP)) {
-            ps.setString(1, playerUuid.toString());
-            ps.setString(2, teamId.toString());
-            ps.setString(3, rank);
-            ps.setString(4, RedisSync.getInstance().getServerId());
-            int rows = ps.executeUpdate();
-            FTBQuestsSync.LOGGER.info("Membership upsert: player={} team={} rank={} rows={}",
-                    playerUuid, teamId, rank, rows);
         }
     }
 
     public CompletableFuture<Void> upsertMembershipFuture(UUID playerUuid, UUID teamId, String rank) {
         if (!isAvailable()) return CompletableFuture.failedFuture(new IllegalStateException("MySQL unavailable"));
         try {
-            return CompletableFuture.runAsync(() -> {
-                try {
-                    upsertMembershipOrThrow(playerUuid, teamId, rank);
-                } catch (Exception e) {
-                    throw new CompletionException(e);
-                }
-            }, dbExecutor);
+            return CompletableFuture.runAsync(() -> membershipRepository.upsertMembership(playerUuid, teamId, rank), dbExecutor);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("DB queue full; cannot upsert membership player={} team={}", playerUuid, teamId, e);
             return CompletableFuture.failedFuture(e);
@@ -1018,23 +903,13 @@ public class MySQLBackend {
 
     public void upsertOwnPlayerMembershipIfAbsentOrSelf(UUID playerUuid, String rank) {
         if (!isAvailable()) return;
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_UPSERT_OWN_PLAYER_MEMBERSHIP_IF_ABSENT_OR_SELF)) {
-            ps.setString(1, playerUuid.toString());
-            ps.setString(2, playerUuid.toString());
-            ps.setString(3, rank);
-            ps.setString(4, RedisSync.getInstance().getServerId());
-            int rows = ps.executeUpdate();
-            FTBQuestsSync.LOGGER.info("Solo membership upsert (guarded): player={} rows={}", playerUuid, rows);
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("upsertOwnPlayerMembershipIfAbsentOrSelf failed for player={}", playerUuid, e);
-        }
+        membershipRepository.upsertOwnPlayerMembershipIfAbsentOrSelf(playerUuid, rank);
     }
 
     public void upsertOwnPlayerMembershipIfAbsentOrSelfAsync(UUID playerUuid, String rank) {
         if (!isAvailable()) return;
         try {
-            CompletableFuture.runAsync(() -> upsertOwnPlayerMembershipIfAbsentOrSelf(playerUuid, rank), dbExecutor);
+            CompletableFuture.runAsync(() -> membershipRepository.upsertOwnPlayerMembershipIfAbsentOrSelf(playerUuid, rank), dbExecutor);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("DB queue full; cannot upsert solo membership player={}", playerUuid, e);
         }
@@ -1042,20 +917,13 @@ public class MySQLBackend {
 
     public void upsertPlayerName(UUID playerUuid, String playerName) {
         if (!isAvailable() || playerName == null || playerName.isBlank()) return;
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_UPSERT_PLAYER_NAME)) {
-            ps.setString(1, playerUuid.toString());
-            ps.setString(2, playerName);
-            ps.executeUpdate();
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("upsertPlayerName failed player={} name={}", playerUuid, playerName, e);
-        }
+        playerNameRepository.upsertPlayerName(playerUuid, playerName);
     }
 
     public void upsertPlayerNameAsync(UUID playerUuid, String playerName) {
         if (!isAvailable()) return;
         try {
-            CompletableFuture.runAsync(() -> upsertPlayerName(playerUuid, playerName), dbExecutor);
+            CompletableFuture.runAsync(() -> playerNameRepository.upsertPlayerName(playerUuid, playerName), dbExecutor);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("DB queue full; cannot upsert player name player={}", playerUuid, e);
         }
@@ -1063,23 +931,7 @@ public class MySQLBackend {
 
     public List<UUID> selectMembershipUuidsMissingName() {
         if (!isAvailable()) return List.of();
-        String sql = "SELECT m.player_uuid FROM ftbquests_team_membership m "
-                + "LEFT JOIN ftbquests_player_names n ON n.player_uuid = m.player_uuid "
-                + "WHERE n.player_uuid IS NULL OR n.player_name IS NULL OR n.player_name = ''";
-        List<UUID> out = new ArrayList<>();
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql);
-             ResultSet rs = ps.executeQuery()) {
-            while (rs.next()) {
-                try {
-                    out.add(UUID.fromString(rs.getString(1)));
-                } catch (IllegalArgumentException ignored) {
-                }
-            }
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("selectMembershipUuidsMissingName failed", e);
-        }
-        return out;
+        return playerNameRepository.selectMissingNameUuids();
     }
 
     public void backfillPlayerNamesAsync(Map<UUID, String> resolved) {
@@ -1090,7 +942,7 @@ public class MySQLBackend {
                 int n = 0;
                 for (Map.Entry<UUID, String> e : copy.entrySet()) {
                     if (e.getValue() == null || e.getValue().isBlank()) continue;
-                    upsertPlayerName(e.getKey(), e.getValue());
+                    playerNameRepository.upsertPlayerName(e.getKey(), e.getValue());
                     n++;
                 }
                 FTBQuestsSync.LOGGER.info("Player-name backfill complete: {} name(s) written", n);
@@ -1102,76 +954,23 @@ public class MySQLBackend {
 
     public Optional<UUID> selectPlayerUuidByName(String playerName) {
         if (!isAvailable() || playerName == null || playerName.isBlank()) return Optional.empty();
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_SELECT_PLAYER_UUID_BY_NAME)) {
-            ps.setString(1, playerName);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? Optional.of(UUID.fromString(rs.getString(1))) : Optional.empty();
-            }
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("selectPlayerUuidByName failed name={}", playerName, e);
-            return Optional.empty();
-        }
+        return playerNameRepository.selectUuidByName(playerName);
     }
 
     public Optional<String> selectPlayerNameByUuid(UUID playerUuid) {
         if (!isAvailable()) return Optional.empty();
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_SELECT_PLAYER_NAME_BY_UUID)) {
-            ps.setString(1, playerUuid.toString());
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? Optional.ofNullable(rs.getString(1)) : Optional.empty();
-            }
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("selectPlayerNameByUuid failed for player={}", playerUuid, e);
-            return Optional.empty();
-        }
+        return playerNameRepository.selectNameByUuid(playerUuid);
     }
 
     public Map<UUID, String> selectPlayerNames(Collection<UUID> playerUuids) {
-        Map<UUID, String> result = new HashMap<>();
-        if (!isAvailable() || playerUuids == null || playerUuids.isEmpty()) return result;
-        List<UUID> uuids = new ArrayList<>();
-        for (UUID uuid : playerUuids) {
-            if (uuid != null) uuids.add(uuid);
-        }
-        if (uuids.isEmpty()) return result;
-
-        StringBuilder sql = new StringBuilder(
-                "SELECT player_uuid, player_name FROM ftbquests_player_names WHERE player_uuid IN (");
-        for (int i = 0; i < uuids.size(); i++) {
-            if (i > 0) sql.append(',');
-            sql.append('?');
-        }
-        sql.append(')');
-
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql.toString())) {
-            for (int i = 0; i < uuids.size(); i++) {
-                ps.setString(i + 1, uuids.get(i).toString());
-            }
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    try {
-                        UUID uuid = UUID.fromString(rs.getString(1));
-                        String name = rs.getString(2);
-                        if (name != null && !name.isBlank()) {
-                            result.put(uuid, name);
-                        }
-                    } catch (IllegalArgumentException ignored) {
-                    }
-                }
-            }
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("selectPlayerNames failed for {} uuid(s)", uuids.size(), e);
-        }
-        return result;
+        if (!isAvailable() || playerUuids == null || playerUuids.isEmpty()) return Map.of();
+        return playerNameRepository.selectNames(playerUuids);
     }
 
     public CompletableFuture<Map<UUID, String>> selectPlayerNamesAsync(Collection<UUID> playerUuids) {
         if (!isAvailable()) return CompletableFuture.completedFuture(Map.of());
         try {
-            return CompletableFuture.supplyAsync(() -> selectPlayerNames(playerUuids), dbExecutor);
+            return CompletableFuture.supplyAsync(() -> playerNameRepository.selectNames(playerUuids), dbExecutor);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("DB queue full; cannot select player names for {} uuid(s)",
                     playerUuids == null ? 0 : playerUuids.size(), e);
@@ -1181,31 +980,19 @@ public class MySQLBackend {
 
     public java.util.Optional<TeamMembershipRow> selectMembership(UUID playerUuid) {
         if (!isAvailable()) return java.util.Optional.empty();
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_SELECT_MEMBERSHIP)) {
-            ps.setString(1, playerUuid.toString());
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) return java.util.Optional.empty();
-                return java.util.Optional.of(new TeamMembershipRow(
-                        UUID.fromString(rs.getString(1)),
-                        rs.getString(2)));
-            }
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("selectMembership failed for player={}", playerUuid, e);
-            return java.util.Optional.empty();
-        }
+        return membershipRepository.selectMembership(playerUuid);
     }
 
     public CompletableFuture<TeamMaterializationRow> loadTeamMaterializationAsync(UUID playerUuid) {
         if (!isAvailable()) return CompletableFuture.completedFuture(null);
         try {
             return CompletableFuture.supplyAsync(() -> {
-                TeamMembershipRow membership = selectMembership(playerUuid).orElse(null);
+                TeamMembershipRow membership = membershipRepository.selectMembership(playerUuid).orElse(null);
                 if (membership == null) return null;
                 UUID teamId = membership.teamId();
-                TeamInfoRow info = selectTeamInfo(teamId).orElse(null);
-                java.util.List<TeamMemberRow> members = selectTeamMembers(teamId);
-                java.util.List<TeamInviteRow> invites = selectTeamInvites(teamId);
+                TeamInfoRow info = teamInfoRepository.selectTeamInfo(teamId).orElse(null);
+                java.util.List<TeamMemberRow> members = membershipRepository.selectTeamMembers(teamId);
+                java.util.List<TeamInviteRow> invites = inviteRepository.selectInvitesForTeam(teamId);
                 return new TeamMaterializationRow(membership, info, members, invites);
             }, dbExecutor);
         } catch (Exception e) {
@@ -1216,28 +1003,13 @@ public class MySQLBackend {
 
     public java.util.Optional<TeamInfoRow> selectTeamInfo(UUID teamId) {
         if (!isAvailable()) return java.util.Optional.empty();
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_SELECT_TEAM_INFO)) {
-            ps.setString(1, teamId.toString());
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) return java.util.Optional.empty();
-                return java.util.Optional.of(new TeamInfoRow(
-                        rs.getString(1),
-                        rs.getString(2),
-                        rs.getString(3) == null ? null : UUID.fromString(rs.getString(3)),
-                        rs.getInt(4) == 1,
-                        rs.getString(5)));
-            }
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("selectTeamInfo failed for team={}", teamId, e);
-            return java.util.Optional.empty();
-        }
+        return teamInfoRepository.selectTeamInfo(teamId);
     }
 
     public CompletableFuture<java.util.Optional<TeamInfoRow>> selectTeamInfoAsync(UUID teamId) {
         if (!isAvailable()) return CompletableFuture.completedFuture(java.util.Optional.empty());
         try {
-            return CompletableFuture.supplyAsync(() -> selectTeamInfo(teamId), dbExecutor);
+            return CompletableFuture.supplyAsync(() -> teamInfoRepository.selectTeamInfo(teamId), dbExecutor);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("DB queue full; cannot select team info {}", teamId, e);
             return CompletableFuture.completedFuture(java.util.Optional.empty());
@@ -1248,9 +1020,9 @@ public class MySQLBackend {
         if (!isAvailable()) return CompletableFuture.completedFuture(null);
         try {
             return CompletableFuture.supplyAsync(() -> new TeamStateRow(
-                    selectTeamInfo(teamId).orElse(null),
-                    selectTeamMembers(teamId),
-                    selectTeamInvites(teamId)), dbExecutor);
+                    teamInfoRepository.selectTeamInfo(teamId).orElse(null),
+                    membershipRepository.selectTeamMembers(teamId),
+                    inviteRepository.selectInvitesForTeam(teamId)), dbExecutor);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("DB queue full; cannot load team state {}", teamId, e);
             return CompletableFuture.completedFuture(null);
@@ -1259,67 +1031,7 @@ public class MySQLBackend {
 
     public boolean updateTeamOwner(UUID teamId, UUID newOwner) {
         if (!isAvailable()) return false;
-        String serverId = RedisSync.getInstance().getServerId();
-        try (Connection conn = connectionProvider.getConnection()) {
-            boolean previousAutoCommit = conn.getAutoCommit();
-            try {
-                conn.setAutoCommit(false);
-
-                int ownerRows;
-                try (PreparedStatement ps = conn.prepareStatement(SQL_UPDATE_TEAM_OWNER)) {
-                    ps.setString(1, newOwner.toString());
-                    ps.setString(2, serverId);
-                    ps.setString(3, teamId.toString());
-                    ownerRows = ps.executeUpdate();
-                }
-
-                if (ownerRows <= 0) {
-                    conn.rollback();
-                    FTBQuestsSync.LOGGER.warn("Team owner update skipped: team={} owner={} rows=0", teamId, newOwner);
-                    return false;
-                }
-
-                int demotedRows;
-                try (PreparedStatement ps = conn.prepareStatement(SQL_DEMOTE_OTHER_OWNERS)) {
-                    ps.setString(1, serverId);
-                    ps.setString(2, teamId.toString());
-                    ps.setString(3, newOwner.toString());
-                    demotedRows = ps.executeUpdate();
-                }
-
-                int membershipRows;
-                try (PreparedStatement ps = conn.prepareStatement(SQL_UPSERT_MEMBERSHIP)) {
-                    ps.setString(1, newOwner.toString());
-                    ps.setString(2, teamId.toString());
-                    ps.setString(3, "OWNER");
-                    ps.setString(4, serverId);
-                    membershipRows = ps.executeUpdate();
-                }
-
-                conn.commit();
-                FTBQuestsSync.LOGGER.info(
-                        "Team owner update: team={} owner={} rows={} demoted={} membershipRows={}",
-                        teamId, newOwner, ownerRows, demotedRows, membershipRows);
-                return true;
-            } catch (Exception e) {
-                try {
-                    conn.rollback();
-                } catch (Exception rollbackError) {
-                    FTBQuestsSync.LOGGER.warn("updateTeamOwner rollback failed team={} owner={}", teamId, newOwner, rollbackError);
-                }
-                throw e;
-            } finally {
-                try {
-                    conn.setAutoCommit(previousAutoCommit);
-                } catch (Exception restoreError) {
-                    FTBQuestsSync.LOGGER.warn("updateTeamOwner autocommit restore failed team={} owner={}",
-                            teamId, newOwner, restoreError);
-                }
-            }
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("updateTeamOwner failed team={} owner={}", teamId, newOwner, e);
-            return false;
-        }
+        return teamInfoRepository.updateTeamOwner(teamId, newOwner);
     }
 
 
@@ -1469,46 +1181,20 @@ public class MySQLBackend {
         }
     }
 
-    public record TeamMembershipRow(UUID teamId, String rank) {
-    }
-
     public java.util.List<TeamMemberRow> selectTeamMembers(UUID teamId) {
-        java.util.List<TeamMemberRow> result = new java.util.ArrayList<>();
-        if (!isAvailable()) return result;
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_SELECT_MEMBERS_OF_TEAM)) {
-            ps.setString(1, teamId.toString());
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    result.add(new TeamMemberRow(UUID.fromString(rs.getString(1)), rs.getString(2)));
-                }
-            }
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("selectTeamMembers failed for team={}", teamId, e);
-        }
-        return result;
+        if (!isAvailable()) return java.util.List.of();
+        return membershipRepository.selectTeamMembers(teamId);
     }
 
     public void upsertTeamInvite(UUID teamId, UUID invitedUuid, UUID inviterUuid) {
         if (!isAvailable()) return;
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_UPSERT_INVITE)) {
-            ps.setString(1, teamId.toString());
-            ps.setString(2, invitedUuid.toString());
-            ps.setString(3, inviterUuid == null ? null : inviterUuid.toString());
-            ps.setString(4, RedisSync.getInstance().getServerId());
-            int rows = ps.executeUpdate();
-            FTBQuestsSync.LOGGER.info("Team invite upsert: team={} invited={} inviter={} rows={}",
-                    teamId, invitedUuid, inviterUuid, rows);
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("upsertTeamInvite failed team={} invited={}", teamId, invitedUuid, e);
-        }
+        inviteRepository.upsertInvite(teamId, invitedUuid, inviterUuid);
     }
 
     public void upsertTeamInviteAsync(UUID teamId, UUID invitedUuid, UUID inviterUuid) {
         if (!isAvailable()) return;
         try {
-            CompletableFuture.runAsync(() -> upsertTeamInvite(teamId, invitedUuid, inviterUuid), dbExecutor);
+            CompletableFuture.runAsync(() -> inviteRepository.upsertInvite(teamId, invitedUuid, inviterUuid), dbExecutor);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("DB queue full; cannot upsert team invite team={} invited={}", teamId, invitedUuid, e);
         }
@@ -1516,21 +1202,13 @@ public class MySQLBackend {
 
     public void deleteTeamInvite(UUID teamId, UUID invitedUuid) {
         if (!isAvailable()) return;
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_DELETE_INVITE)) {
-            ps.setString(1, teamId.toString());
-            ps.setString(2, invitedUuid.toString());
-            int rows = ps.executeUpdate();
-            FTBQuestsSync.LOGGER.info("Team invite deleted: team={} invited={} rows={}", teamId, invitedUuid, rows);
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("deleteTeamInvite failed team={} invited={}", teamId, invitedUuid, e);
-        }
+        inviteRepository.deleteInvite(teamId, invitedUuid);
     }
 
     public void deleteTeamInviteAsync(UUID teamId, UUID invitedUuid) {
         if (!isAvailable()) return;
         try {
-            CompletableFuture.runAsync(() -> deleteTeamInvite(teamId, invitedUuid), dbExecutor);
+            CompletableFuture.runAsync(() -> inviteRepository.deleteInvite(teamId, invitedUuid), dbExecutor);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("DB queue full; cannot delete team invite team={} invited={}", teamId, invitedUuid, e);
         }
@@ -1538,20 +1216,13 @@ public class MySQLBackend {
 
     public void deleteTeamInvitesForTeam(UUID teamId) {
         if (!isAvailable()) return;
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_DELETE_INVITES_FOR_TEAM)) {
-            ps.setString(1, teamId.toString());
-            int rows = ps.executeUpdate();
-            FTBQuestsSync.LOGGER.info("Team invites deleted for team: team={} rows={}", teamId, rows);
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("deleteTeamInvitesForTeam failed team={}", teamId, e);
-        }
+        inviteRepository.deleteInvitesForTeam(teamId);
     }
 
     public void deleteTeamInvitesForTeamAsync(UUID teamId) {
         if (!isAvailable()) return;
         try {
-            CompletableFuture.runAsync(() -> deleteTeamInvitesForTeam(teamId), dbExecutor);
+            CompletableFuture.runAsync(() -> inviteRepository.deleteInvitesForTeam(teamId), dbExecutor);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("DB queue full; cannot delete team invites for team={}", teamId, e);
         }
@@ -1559,67 +1230,23 @@ public class MySQLBackend {
 
     public java.util.Optional<TeamInviteRow> selectTeamInvite(UUID teamId, UUID invitedUuid) {
         if (!isAvailable()) return java.util.Optional.empty();
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_SELECT_INVITE)) {
-            ps.setString(1, teamId.toString());
-            ps.setString(2, invitedUuid.toString());
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) return java.util.Optional.empty();
-                return java.util.Optional.of(new TeamInviteRow(
-                        UUID.fromString(rs.getString(1)),
-                        UUID.fromString(rs.getString(2)),
-                        rs.getString(3) == null ? null : UUID.fromString(rs.getString(3))));
-            }
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("selectTeamInvite failed team={} invited={}", teamId, invitedUuid, e);
-            return java.util.Optional.empty();
-        }
+        return inviteRepository.selectInvite(teamId, invitedUuid);
     }
 
     public java.util.List<TeamInviteRow> selectTeamInvites(UUID teamId) {
-        java.util.List<TeamInviteRow> result = new java.util.ArrayList<>();
-        if (!isAvailable()) return result;
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_SELECT_INVITES_FOR_TEAM)) {
-            ps.setString(1, teamId.toString());
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    result.add(new TeamInviteRow(
-                            UUID.fromString(rs.getString(1)),
-                            UUID.fromString(rs.getString(2)),
-                            rs.getString(3) == null ? null : UUID.fromString(rs.getString(3))));
-                }
-            }
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("selectTeamInvites failed for team={}", teamId, e);
-        }
-        return result;
+        if (!isAvailable()) return java.util.List.of();
+        return inviteRepository.selectInvitesForTeam(teamId);
     }
 
     public java.util.List<TeamInviteRow> selectInvitesForPlayer(UUID playerUuid) {
-        java.util.List<TeamInviteRow> result = new java.util.ArrayList<>();
-        if (!isAvailable()) return result;
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_SELECT_INVITES_FOR_PLAYER)) {
-            ps.setString(1, playerUuid.toString());
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    result.add(new TeamInviteRow(
-                            UUID.fromString(rs.getString(1)),
-                            UUID.fromString(rs.getString(2)),
-                            rs.getString(3) == null ? null : UUID.fromString(rs.getString(3))));
-                }
-            }
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("selectInvitesForPlayer failed for player={}", playerUuid, e);
-        }
-        return result;
+        if (!isAvailable()) return java.util.List.of();
+        return inviteRepository.selectInvitesForPlayer(playerUuid);
     }
 
     public CompletableFuture<java.util.List<TeamInviteRow>> selectInvitesForPlayerAsync(UUID playerUuid) {
         if (!isAvailable()) return CompletableFuture.completedFuture(java.util.List.of());
         try {
-            return CompletableFuture.supplyAsync(() -> selectInvitesForPlayer(playerUuid), dbExecutor);
+            return CompletableFuture.supplyAsync(() -> inviteRepository.selectInvitesForPlayer(playerUuid), dbExecutor);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("DB queue full; cannot select invites for player={}", playerUuid, e);
             return CompletableFuture.completedFuture(java.util.List.of());
@@ -1630,41 +1257,8 @@ public class MySQLBackend {
         if (!isAvailable()) return CompletableFuture.failedFuture(new IllegalStateException("MySQL unavailable"));
         try {
             return CompletableFuture.runAsync(() -> {
-                try (Connection conn = connectionProvider.getConnection()) {
-                    boolean previousAutoCommit = conn.getAutoCommit();
-                    try {
-                        conn.setAutoCommit(false);
-                        try (PreparedStatement ps = conn.prepareStatement(SQL_UPSERT_MEMBERSHIP)) {
-                            ps.setString(1, playerUuid.toString());
-                            ps.setString(2, teamId.toString());
-                            ps.setString(3, rank);
-                            ps.setString(4, RedisSync.getInstance().getServerId());
-                            ps.executeUpdate();
-                        }
-                        try (PreparedStatement ps = conn.prepareStatement(SQL_DELETE_INVITE)) {
-                            ps.setString(1, teamId.toString());
-                            ps.setString(2, playerUuid.toString());
-                            ps.executeUpdate();
-                        }
-                        conn.commit();
-                        FTBQuestsSync.LOGGER.info("Membership accepted atomically: player={} team={} rank={}",
-                                playerUuid, teamId, rank);
-                    } catch (Exception e) {
-                        try {
-                            conn.rollback();
-                        } catch (Exception rollbackError) {
-                            FTBQuestsSync.LOGGER.warn("acceptMembership rollback failed player={} team={}",
-                                    playerUuid, teamId, rollbackError);
-                        }
-                        throw e;
-                    } finally {
-                        try {
-                            conn.setAutoCommit(previousAutoCommit);
-                        } catch (Exception restoreError) {
-                            FTBQuestsSync.LOGGER.warn("acceptMembership autocommit restore failed player={} team={}",
-                                    playerUuid, teamId, restoreError);
-                        }
-                    }
+                try {
+                    membershipRepository.acceptMembership(playerUuid, teamId, rank);
                 } catch (Exception e) {
                     throw new CompletionException(e);
                 }
@@ -1673,21 +1267,6 @@ public class MySQLBackend {
             FTBQuestsSync.LOGGER.warn("DB queue full; cannot accept membership player={} team={}", playerUuid, teamId, e);
             return CompletableFuture.failedFuture(e);
         }
-    }
-
-    public record TeamMemberRow(UUID playerUuid, String rank) {
-    }
-
-    public record TeamInfoRow(String type, String name, UUID owner, boolean deleted, String color) {
-    }
-
-    public record TeamInviteRow(UUID teamId, UUID invitedUuid, UUID inviterUuid) {
-    }
-
-    public record TeamMaterializationRow(TeamMembershipRow membership, TeamInfoRow info, java.util.List<TeamMemberRow> members, java.util.List<TeamInviteRow> invites) {
-    }
-
-    public record TeamStateRow(TeamInfoRow info, java.util.List<TeamMemberRow> members, java.util.List<TeamInviteRow> invites) {
     }
 
     public void shutdown() {
