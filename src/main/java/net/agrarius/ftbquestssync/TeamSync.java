@@ -22,9 +22,11 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.TickTask;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.server.ServerLifecycleHooks;
+import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPubSub;
+import redis.clients.jedis.Protocol;
 
 import java.util.List;
 import java.util.Map;
@@ -108,9 +110,10 @@ public final class TeamSync {
         }
         this.server = server;
         try {
-            pool = new JedisPool(Config.redisHost, Config.redisPort);
+            String password = Config.redisPassword.isBlank() ? null : Config.redisPassword;
+            pool = new JedisPool(new GenericObjectPoolConfig<>(), Config.redisHost, Config.redisPort,
+                    Protocol.DEFAULT_TIMEOUT, password);
             try (Jedis jedis = pool.getResource()) {
-                auth(jedis);
                 String pong = jedis.ping();
                 if (!"PONG".equals(pong)) throw new IllegalStateException("PING got " + pong);
             }
@@ -563,7 +566,6 @@ public final class TeamSync {
         if (prev != null && now - prev < 50L) return;
 
         try (Jedis jedis = pool.getResource()) {
-            auth(jedis);
             jedis.publish(CHANNEL, payload);
             FTBQuestsSync.LOGGER.info("Published team event: {}", payload);
         } catch (Exception e) {
@@ -575,7 +577,6 @@ public final class TeamSync {
         while (enabled && !Thread.currentThread().isInterrupted()) {
             try {
                 subscriberConn = pool.getResource();
-                auth(subscriberConn);
                 subscriberConn.subscribe(new JedisPubSub() {
                     @Override
                     public void onMessage(String channel, String message) {
@@ -873,11 +874,5 @@ public final class TeamSync {
             return new GameProfile(playerId, dbName);
         }
         return new GameProfile(playerId, playerId.toString());
-    }
-
-    private static void auth(Jedis jedis) {
-        if (!Config.redisPassword.isBlank()) {
-            jedis.auth(Config.redisPassword);
-        }
     }
 }
