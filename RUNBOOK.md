@@ -1,6 +1,6 @@
 # ftb-quests-mysql-sync — Operations Runbook
 
-Operational reference for the customer handoff (release `1.1.9`). Covers config,
+Operational reference for the customer handoff (release `1.2.0`). Covers config,
 boot smoke, dependency/license posture, secret-scan evidence, build reproducibility,
 DB backup/restore, and bad-reset rollback.
 
@@ -50,10 +50,10 @@ TeamSync.java:124, FTBQuestsSync.java:59 — version token tracks the release):
 MySQL ready: <host>:3306/<db> user=<user> pool=<minIdle>/<maxPool>
 Redis ready: <host>:6379 channel=agrarius:quests:team-updated serverId=agr1
 TeamSync Redis ready: channel=ftbquests:team:membership
-FTB Quests Sync 1.1.9 ready (mysqlAvailable=true, redisEnabled=true, teamsRedisEnabled=true, serverId=agr1)
+FTB Quests Sync 1.2.0 ready (mysqlAvailable=true, redisEnabled=true, teamsRedisEnabled=true, serverId=agr1)
 ```
-Gate: all 4 present; serverId correct per CT. If the JAR still logs `1.1.8`, the
-1.1.9 build has not shipped — fail the gate.
+Gate: all 4 present; serverId correct per CT. If the JAR still logs `1.1.9`, the
+1.2.0 build has not shipped — fail the gate.
 
 ---
 
@@ -132,13 +132,13 @@ Mod build:
 ```
 export JAVA_HOME=/usr/lib/jvm/java-17-openjdk   # MUST be JDK 17; system default may be newer and breaks the build
 ./gradlew clean reobfShadowJar
-# output: build/libs/ftb-quests-mysql-sync-1.1.9.jar
-sha256sum build/libs/ftb-quests-mysql-sync-1.1.9.jar   # record; must match on agr1 + agr2
+# output: build/libs/ftb-quests-mysql-sync-1.2.0.jar
+sha256sum build/libs/ftb-quests-mysql-sync-1.2.0.jar   # record; must match on agr1 + agr2
 ```
-RELEASE artifact (v1.1.9, `./gradlew clean reobfShadowJar`, JDK 17.0.19 — this is the jar to DEPLOY):
-`2d337f490b486125789975353fb912fed5443a74d39940de66848c813fd6efd6  ftb-quests-mysql-sync-1.1.9.jar`
-Published at GitHub release `v1.1.9`. Deploy the SAME jar to agr1 + agr2; verify identical SHA256.
-(Dev jar from `./gradlew clean build` differs intentionally: `245b125f…410d`.)
+RELEASE artifact (v1.2.0, `./gradlew clean reobfShadowJar`, JDK 17.0.19 — this is the jar to DEPLOY):
+`6c4076f0dc0127fc22aba4fec04e40a4780adfce574f20c8520d122098af9a0e  ftb-quests-mysql-sync-1.2.0.jar`
+Published at GitHub release `v1.2.0`. Deploy the SAME jar to agr1 + agr2; verify identical SHA256.
+(Dev jar from `./gradlew clean build` differs intentionally: `38a104ac…4735`.)
 Web install (reproducible):
 ```
 cd web && npm ci    # requires committed package-lock.json
