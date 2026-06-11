@@ -101,11 +101,11 @@ public final class LegacyQuestMigrator {
      * pre-check; the operator is presumed to know what they are doing.
      * Guarded by {@link MigrationGuard} so two concurrent invocations do
      * not race on the marker file or on the {@code Config} statics.
+     *
+     * <p>The {@code snapshot} MUST be captured on the server thread
+     * ({@link MigrationSnapshot#capture()}) before handing off to a
+     * background thread.
      */
-    public static void runNow(MigrationOptions opts) {
-        runNow(opts, MigrationSnapshot.capture());
-    }
-
     public static void runNow(MigrationOptions opts, MigrationSnapshot snapshot) {
         if (!MigrationGuard.tryAcquire()) {
             FTBQuestsSync.LOGGER.warn("Legacy quest migration already in progress; ignoring duplicate run");
