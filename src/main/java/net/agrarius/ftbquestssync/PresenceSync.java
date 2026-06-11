@@ -76,7 +76,6 @@ public class PresenceSync {
         }
         try {
             try (Jedis jedis = pool.getResource()) {
-                auth(jedis);
                 String pong = jedis.ping();
                 if (!"PONG".equals(pong)) {
                     throw new IllegalStateException("Unexpected Redis PING: " + pong);
@@ -131,7 +130,6 @@ public class PresenceSync {
         JedisPool pool = RedisSync.getInstance().getPool();
         if (pool == null) return;
         try (Jedis jedis = pool.getResource()) {
-            auth(jedis);
             jedis.setex(key, TTL_SECONDS, serverId);
             jedis.publish(CHANNEL, serverId + "|online|" + uuid);
             FTBQuestsSync.LOGGER.debug("Presence online: uuid={} server={}", uuid, serverId);
@@ -146,7 +144,6 @@ public class PresenceSync {
         JedisPool pool = RedisSync.getInstance().getPool();
         if (pool == null) return;
         try (Jedis jedis = pool.getResource()) {
-            auth(jedis);
             String current = jedis.get(key);
             if (serverId.equals(current)) {
                 jedis.del(key);
@@ -179,7 +176,6 @@ public class PresenceSync {
         JedisPool pool = RedisSync.getInstance().getPool();
         if (pool == null) return;
         try (Jedis jedis = pool.getResource()) {
-            auth(jedis);
             for (UUID uuid : localOnline) {
                 String key = REDIS_KEY_PREFIX + uuid;
                 jedis.setex(key, TTL_SECONDS, serverId);
@@ -211,7 +207,6 @@ public class PresenceSync {
         while (enabled && !Thread.currentThread().isInterrupted()) {
             try {
                 subscriberConn = pool.getResource();
-                auth(subscriberConn);
                 subscriberConn.subscribe(new JedisPubSub() {
                     @Override
                     public void onMessage(String channel, String message) {
@@ -288,12 +283,6 @@ public class PresenceSync {
         RemotePresence rp = inst.remoteCache.get(uuid);
         if (rp == null) return false;
         return System.currentTimeMillis() < rp.expiresAt;
-    }
-
-    private static void auth(Jedis jedis) {
-        if (!Config.redisPassword.isBlank()) {
-            jedis.auth(Config.redisPassword);
-        }
     }
 
     private static final class RemotePresence {

@@ -21,9 +21,11 @@ import net.minecraft.Util;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPubSub;
+import redis.clients.jedis.Protocol;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -75,11 +77,10 @@ public class RedisSync {
     public void initialize(MinecraftServer server) {
         this.server = server;
         try {
-            pool = new JedisPool(Config.redisHost, Config.redisPort);
+            String password = Config.redisPassword.isBlank() ? null : Config.redisPassword;
+            pool = new JedisPool(new GenericObjectPoolConfig<>(), Config.redisHost, Config.redisPort,
+                    Protocol.DEFAULT_TIMEOUT, password);
             try (Jedis jedis = pool.getResource()) {
-                if (!Config.redisPassword.isBlank()) {
-                    jedis.auth(Config.redisPassword);
-                }
                 String pong = jedis.ping();
                 if (!"PONG".equals(pong)) {
                     throw new IllegalStateException("Unexpected Redis PING: " + pong);
@@ -104,9 +105,6 @@ public class RedisSync {
         while (enabled && !Thread.currentThread().isInterrupted()) {
             try {
                 subscriberConn = pool.getResource();
-                if (!Config.redisPassword.isBlank()) {
-                    subscriberConn.auth(Config.redisPassword);
-                }
                 subscriberConn.subscribe(new JedisPubSub() {
                     @Override
                     public void onMessage(String channel, String message) {
@@ -137,9 +135,6 @@ public class RedisSync {
         if (!enabled || !Config.syncQuests) return;
 
         try (Jedis jedis = pool.getResource()) {
-            if (!Config.redisPassword.isBlank()) {
-                jedis.auth(Config.redisPassword);
-            }
             String eventId = UUID.randomUUID().toString();
             String payload = "{"
                     + "\"eventId\":\"" + eventId + "\","
@@ -162,9 +157,6 @@ public class RedisSync {
 
         String payload = getServerId() + "|" + reason + "|" + teamId + "|-";
         try (Jedis jedis = pool.getResource()) {
-            if (!Config.redisPassword.isBlank()) {
-                jedis.auth(Config.redisPassword);
-            }
             jedis.publish(CHANNEL, payload);
             FTBQuestsSync.LOGGER.info("Published Redis chunk invalidation: {}", payload);
         } catch (Exception e) {
