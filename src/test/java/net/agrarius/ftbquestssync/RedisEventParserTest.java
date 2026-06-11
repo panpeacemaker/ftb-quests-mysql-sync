@@ -1,5 +1,6 @@
 package net.agrarius.ftbquestssync;
 
+import net.agrarius.ftbquestssync.quests.sync.QuestTeamUpdateEvent;
 import org.junit.jupiter.api.Test;
 
 import java.util.UUID;
