@@ -75,6 +75,10 @@ sourceCreatedAtColumn = "created_at"
 serverIdTag = "migrator"
 maxPlayers = 0
 dryRun = false
+# When false (default) the migrator SKIPS a team row that already exists in
+# the target DB with different content, protecting live data. Set to true
+# only when you explicitly want to force-overwrite existing rows.
+overwriteExisting = false
 # Hard cap on a single legacy blob (Redis value or MariaDB data column).
 # Raise if a real player export exceeds the cap; lower to harden against
 # zip bombs / malformed sources. Default 16 MiB.

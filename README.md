@@ -258,6 +258,7 @@ A **party** export carries the shared party UUID (different from the player UUID
 
 - **Off by default.** `runOnBoot = false`; the mod behaves exactly like 1.1.9 until you opt in. The `/ftbsync migrate` command is rejected unless `runOnBoot = true`.
 - **Idempotent.** A per-server marker file (`<markerDir>/ftbquestssync.migration.done.<serverId>`) prevents re-runs. The team-data write also skips when the content hash is unchanged, so a re-run never bumps the revision counter.
+- **Won't clobber live data.** By default (`overwriteExisting = false`) the migrator skips a team row that already exists in the target DB with different content, so live data from running servers is never overwritten. Set `overwriteExisting = true` only when you explicitly want to force-overwrite.
 - **Fully reversible.** Imported rows are tagged `server_id = 'migrator'`; one `DELETE` removes them all (see [Rollback](#rollback)).
 - **Won't write the marker on failure.** If any player fails or a `maxPlayers` cap is hit, the marker is not written and the next run retries.
 
