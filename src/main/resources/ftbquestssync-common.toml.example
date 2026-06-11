@@ -4,8 +4,8 @@ port = 3306
 database = "agrarius_test"
 username = "agrarius"
 password = ""
-maxPoolSize = 5
-minIdle = 2
+maxPoolSize = 4
+minIdle = 1
 useSsl = true
 allowPublicKeyRetrieval = false
 
@@ -22,6 +22,10 @@ serverId = "server1"
 [features]
 syncQuests = true
 syncTeams = false
+syncChunks = false
+chunkSeedOnStart = false
+chunkCanonicalServerId = "agr1"
+chunkForceLoadSync = true
 sendFullTeamData = true
 # sendDeltaPackets and conflictPolicy are removed/inert (ignored if present)
 
@@ -29,14 +33,21 @@ sendFullTeamData = true
 # blacklist = listed chapters/quests/tasks stay per-player; everything else team-shared
 # whitelist = only listed chapters/quests/tasks are team-shared; everything else per-player
 mode = "blacklist"
-soloChapterIds = ["3622ED01311E6763", "3CEC7F7BAD54E4C6"]
-repeatableSoloChapterIds = ["3622ED01311E6763", "3CEC7F7BAD54E4C6"]
+soloChapterIds = ["3622ED01311E6763", "67F6F5055518AC4F"]
+repeatableSoloChapterIds = []
 soloQuestIds = []
 soloTaskIds = []
 syncSoloProgressPerPlayer = true
 soloRewardsPerPlayer = true
 teamRewardsDedupGlobal = true
 rewardFailClosed = true
+teamClaimChapterIds = ["3CEC7F7BAD54E4C6"]
+teamSharedChapterIds = [
+    "330C551154E3E367", "312B5D7DC7779EFE", "2742F3918C76DA81", "37CD2B0E77E895ED",
+    "587F453EE1BAFB79", "13B88A5F6D9187F8", "75C4C0229F2D2798", "459D60183D34C29E",
+    "5617484BFC479624", "450EB2B6DF25A9EC", "05330DA4070C75C9", "62A72817F92AC262",
+    "4BF4EE11E23C71FC", "10A89CD14C4DAF63", "54A26707B4CD39CC", "74FB988DE790BE0D"
+]
 # Per-rank bonus force-load chunks for /ftbsync chunks setranks <player> <ranks>.
 # Format: list of "rank=count" strings. Matching is case-insensitive.
 # rankBonuses = ["ev=1", "premium=1", "sponzor=3", "donator=5"]
@@ -89,3 +100,5 @@ overwriteExisting = false
 maxBlobBytes = 16777216
 # Hard cap on the decompressed quests.snbt entry. Default 8 MiB.
 maxSnbtBytes = 8388608
+# Only run migration when Config.serverId matches this value (empty = any server).
+runOnServerId = ""
