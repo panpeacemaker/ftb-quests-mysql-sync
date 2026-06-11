@@ -21,6 +21,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import net.agrarius.ftbquestssync.chunks.ChunkLimitPatcher;
+import net.agrarius.ftbquestssync.chunks.RankBonusResolver;
 import net.agrarius.ftbquestssync.teams.TeamMaterializer;
 import net.agrarius.ftbquestssync.teams.TeamMutationGuard;
 import net.agrarius.ftbquestssync.teams.TeamSync;
@@ -72,7 +73,14 @@ public final class FtbSyncTeamCommand {
                                                 .executes(ctx -> setChunkBonus(
                                                         ctx.getSource(),
                                                         StringArgumentType.getString(ctx, "player"),
-                                                        com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(ctx, "amount"))))))));
+                                                        com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(ctx, "amount"))))))
+                        .then(Commands.literal("setranks")
+                                .then(Commands.argument("player", StringArgumentType.word())
+                                        .then(Commands.argument("ranks", StringArgumentType.word())
+                                                .executes(ctx -> setChunkRanks(
+                                                        ctx.getSource(),
+                                                        StringArgumentType.getString(ctx, "player"),
+                                                        StringArgumentType.getString(ctx, "ranks"))))))));
     }
 
     private static int setChunkBonus(CommandSourceStack source, String targetName, int bonusForceLoad) throws CommandSyntaxException {
@@ -100,6 +108,46 @@ public final class FtbSyncTeamCommand {
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.error("setChunkBonus failed player={} team={}", targetId, team.getId(), e);
             source.sendFailure(Component.literal("Failed to set chunk bonus: " + e.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int setChunkRanks(CommandSourceStack source, String targetName, String ranksArg) throws CommandSyntaxException {
+        RankBonusResolver.Result result = RankBonusResolver.resolve(ranksArg, Config.rankBonuses);
+        if (!result.unknown().isEmpty()) {
+            source.sendFailure(Component.literal("Unknown rank(s): " + String.join(", ", result.unknown()) + ". No bonus changed."));
+            return 0;
+        }
+
+        MinecraftServer server = source.getServer();
+        UUID targetId = resolvePlayerUuid(server, targetName);
+        Team team = FTBTeamsAPI.api().getManager().getTeamForPlayerID(targetId).orElse(null);
+        if (team == null) {
+            source.sendFailure(Component.literal("Player has no team yet: " + targetName));
+            return 0;
+        }
+        if (!dev.ftb.mods.ftbchunks.api.FTBChunksAPI.api().isManagerLoaded()) {
+            source.sendFailure(Component.literal("FTB Chunks manager not loaded yet."));
+            return 0;
+        }
+        try {
+            int bonusForceLoad = result.total();
+            dev.ftb.mods.ftbchunks.api.ChunkTeamData data =
+                    dev.ftb.mods.ftbchunks.api.FTBChunksAPI.api().getManager().getOrCreateData(team);
+            data.setExtraForceLoadChunks(bonusForceLoad);
+            ChunkLimitPatcher.ensureCapacity(data, 0, bonusForceLoad);
+            String ranksText = result.resolved().isEmpty()
+                    ? "no ranks"
+                    : String.join(", ", result.resolved());
+            source.sendSuccess(() -> Component.literal(
+                    "Set bonus force-load chunks for " + targetName + " (team " + team.getId() + ") to " + bonusForceLoad
+                            + " via ranks [" + ranksText + "]"), true);
+            FTBQuestsSync.LOGGER.info("Chunk ranks set via command: player={} team={} ranksArg={} resolved={} total={}",
+                    targetId, team.getId(), ranksArg, ranksText, bonusForceLoad);
+            return Command.SINGLE_SUCCESS;
+        } catch (Exception e) {
+            FTBQuestsSync.LOGGER.error("setChunkRanks failed player={} team={}", targetId, team.getId(), e);
+            source.sendFailure(Component.literal("Failed to set chunk ranks: " + e.getMessage()));
             return 0;
         }
     }
