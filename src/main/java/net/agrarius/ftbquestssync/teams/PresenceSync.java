@@ -1,4 +1,8 @@
-package net.agrarius.ftbquestssync;
+package net.agrarius.ftbquestssync.teams;
+
+import net.agrarius.ftbquestssync.Config;
+import net.agrarius.ftbquestssync.FTBQuestsSync;
+import net.agrarius.ftbquestssync.RedisSync;
 
 import dev.ftb.mods.ftbteams.api.FTBTeamsAPI;
 import dev.ftb.mods.ftbteams.data.PlayerTeam;
