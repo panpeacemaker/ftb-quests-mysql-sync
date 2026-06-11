@@ -1,10 +1,10 @@
 package net.agrarius.ftbquestssync.mixin;
 
-import net.agrarius.ftbquestssync.Config;
 import net.agrarius.ftbquestssync.FTBQuestsSync;
 import net.agrarius.ftbquestssync.MySQLBackend;
-import net.agrarius.ftbquestssync.TeamLoadStateRegistry;
-import net.agrarius.ftbquestssync.TeamLoadStateRegistry.TeamLoadState;
+import net.agrarius.ftbquestssync.config.Config;
+import net.agrarius.ftbquestssync.quests.TeamLoadStateRegistry;
+import net.agrarius.ftbquestssync.quests.TeamLoadStateRegistry.TeamLoadState;
 import dev.ftb.mods.ftblibrary.snbt.SNBTCompoundTag;
 import dev.ftb.mods.ftbquests.quest.BaseQuestFile;
 import dev.ftb.mods.ftbquests.quest.TeamData;

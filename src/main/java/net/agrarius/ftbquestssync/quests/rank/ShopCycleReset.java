@@ -1,4 +1,4 @@
-package net.agrarius.ftbquestssync;
+package net.agrarius.ftbquestssync.quests.rank;
 
 import dev.ftb.mods.ftbquests.quest.Quest;
 

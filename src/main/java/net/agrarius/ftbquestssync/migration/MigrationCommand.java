@@ -5,7 +5,7 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.BoolArgumentType;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.brigadier.exceptions.SimpleCommandExceptionType;
-import net.agrarius.ftbquestssync.Config;
+import net.agrarius.ftbquestssync.config.Config;
 import net.agrarius.ftbquestssync.FTBQuestsSync;
 import net.agrarius.ftbquestssync.MySQLBackend;
 import net.minecraft.commands.CommandSourceStack;

@@ -19,11 +19,11 @@ import java.util.UUID;
 import net.minecraft.server.MinecraftServer;
 import net.minecraftforge.server.ServerLifecycleHooks;
 
-import net.agrarius.ftbquestssync.Config;
 import net.agrarius.ftbquestssync.FTBQuestsSync;
 import net.agrarius.ftbquestssync.MySQLBackend;
 import net.agrarius.ftbquestssync.RedisSync;
-import net.agrarius.ftbquestssync.TeamLoadStateRegistry;
+import net.agrarius.ftbquestssync.config.Config;
+import net.agrarius.ftbquestssync.quests.TeamLoadStateRegistry;
 import net.agrarius.ftbquestssync.chunks.ChunkMaterializer;
 import net.agrarius.ftbquestssync.teams.model.TeamInfoRow;
 import net.agrarius.ftbquestssync.teams.model.TeamInviteRow;

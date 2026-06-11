@@ -1,6 +1,6 @@
 package net.agrarius.ftbquestssync.migration;
 
-import net.agrarius.ftbquestssync.Config;
+import net.agrarius.ftbquestssync.config.Config;
 
 /**
  * Immutable snapshot of migration settings taken at the moment a run is

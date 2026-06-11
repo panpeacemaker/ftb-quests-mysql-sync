@@ -1,7 +1,7 @@
 package net.agrarius.ftbquestssync.mixin;
 
 import dev.ftb.mods.ftbteams.data.AbstractTeam;
-import net.agrarius.ftbquestssync.Config;
+import net.agrarius.ftbquestssync.config.Config;
 import net.agrarius.ftbquestssync.MySQLBackend;
 import net.agrarius.ftbquestssync.teams.TeamSync;
 import net.minecraft.commands.CommandSourceStack;

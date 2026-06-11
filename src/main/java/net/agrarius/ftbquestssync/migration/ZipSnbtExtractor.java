@@ -1,6 +1,6 @@
 package net.agrarius.ftbquestssync.migration;
 
-import net.agrarius.ftbquestssync.Config;
+import net.agrarius.ftbquestssync.config.Config;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;

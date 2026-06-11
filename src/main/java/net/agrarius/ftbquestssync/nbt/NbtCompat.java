@@ -1,5 +1,6 @@
-package net.agrarius.ftbquestssync;
+package net.agrarius.ftbquestssync.nbt;
 
+import net.agrarius.ftbquestssync.FTBQuestsSync;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtIo;
 
@@ -20,7 +21,7 @@ import java.lang.reflect.Method;
  * This wrapper tries the deobf name first, falls back to SRG, caches the
  * Method handle, and lets both prod and dev runtimes work without rebuild.
  */
-final class NbtCompat {
+public final class NbtCompat {
 
     private static volatile Method writeMethod;
     private static volatile Method readMethod;
@@ -28,14 +29,14 @@ final class NbtCompat {
     private NbtCompat() {
     }
 
-    static void writeCompressed(CompoundTag tag, OutputStream out) throws Exception {
+    public static void writeCompressed(CompoundTag tag, OutputStream out) throws Exception {
         if (writeMethod == null) {
             writeMethod = find("writeCompressed", "m_128947_", CompoundTag.class, OutputStream.class);
         }
         writeMethod.invoke(null, tag, out);
     }
 
-    static CompoundTag readCompressed(InputStream in) throws Exception {
+    public static CompoundTag readCompressed(InputStream in) throws Exception {
         if (readMethod == null) {
             readMethod = find("readCompressed", "m_128939_", InputStream.class);
         }

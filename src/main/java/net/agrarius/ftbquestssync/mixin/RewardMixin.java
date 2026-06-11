@@ -1,6 +1,6 @@
 package net.agrarius.ftbquestssync.mixin;
 
-import net.agrarius.ftbquestssync.Config;
+import net.agrarius.ftbquestssync.config.Config;
 import dev.ftb.mods.ftbquests.quest.Quest;
 import dev.ftb.mods.ftbquests.quest.reward.Reward;
 import dev.ftb.mods.ftblibrary.config.Tristate;

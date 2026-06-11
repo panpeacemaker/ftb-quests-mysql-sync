@@ -2,7 +2,7 @@ package net.agrarius.ftbquestssync.mixin;
 
 import dev.ftb.mods.ftbteams.api.client.KnownClientPlayer;
 import dev.ftb.mods.ftbteams.data.PlayerTeam;
-import net.agrarius.ftbquestssync.Config;
+import net.agrarius.ftbquestssync.config.Config;
 import net.agrarius.ftbquestssync.teams.PresenceSync;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;

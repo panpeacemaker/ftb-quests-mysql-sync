@@ -1,5 +1,6 @@
 package net.agrarius.ftbquestssync;
 
+import net.agrarius.ftbquestssync.config.Config;
 import net.agrarius.ftbquestssync.chunks.ChunkMaterializer;
 import net.agrarius.ftbquestssync.messaging.MessageRouter;
 import net.agrarius.ftbquestssync.messaging.RedisBus;
@@ -38,8 +39,8 @@ public class RedisSync {
     private MinecraftServer server;
 
     private RedisSync() {
-        this.fallbackServerId = (Config.serverId != null)
-                ? Config.serverId
+        this.fallbackServerId = (Config.getServerId() != null)
+                ? Config.getServerId()
                 : System.getProperty("ftbquestssync.server.id",
                         "unknown-" + UUID.randomUUID().toString().substring(0, 8));
     }
@@ -49,7 +50,7 @@ public class RedisSync {
     }
 
     public String getServerId() {
-        return (Config.serverId != null) ? Config.serverId : fallbackServerId;
+        return (Config.getServerId() != null) ? Config.getServerId() : fallbackServerId;
     }
 
     public boolean isEnabled() {
