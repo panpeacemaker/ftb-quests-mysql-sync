@@ -91,6 +91,10 @@ public final class Config {
     public static boolean migrationDryRun = false;
     public static int migrationMaxBlobBytes = 16 * 1024 * 1024; // 16 MiB per legacy blob (zip bomb guard)
     public static int migrationMaxSnbtBytes = 8 * 1024 * 1024; // 8 MiB per quests.snbt entry (decompressed)
+    // When false (default) the migrator SKIPs a team row that already exists in
+    // the target DB with different content, so live data is never overwritten.
+    // Set to true only when you explicitly want to force-overwrite existing rows.
+    public static boolean migrationOverwriteExisting = false;
     public static String migrationRunOnServerId = ""; // empty = any server; otherwise must match Config.serverId
     public static String migrationMarkerDir = "/opt/agrarius/config"; // parent directory for the per-server marker file
     // -- UUID remap (offline -> current/online UUID) --
@@ -184,6 +188,7 @@ public final class Config {
         migrationDryRun = boolProp("ftbquestssync.migration.dryRun", toml.getOrDefault("dryRun", String.valueOf(migrationDryRun)), migrationDryRun);
         migrationMaxBlobBytes = intProp("ftbquestssync.migration.maxBlobBytes", toml.getOrDefault("maxBlobBytes", String.valueOf(migrationMaxBlobBytes)), migrationMaxBlobBytes);
         migrationMaxSnbtBytes = intProp("ftbquestssync.migration.maxSnbtBytes", toml.getOrDefault("maxSnbtBytes", String.valueOf(migrationMaxSnbtBytes)), migrationMaxSnbtBytes);
+        migrationOverwriteExisting = boolProp("ftbquestssync.migration.overwriteExisting", toml.getOrDefault("overwriteExisting", String.valueOf(migrationOverwriteExisting)), migrationOverwriteExisting);
         migrationRunOnServerId = prop("ftbquestssync.migration.runOnServerId", toml.getOrDefault("runOnServerId", migrationRunOnServerId)).trim();
         migrationMarkerDir = prop("ftbquestssync.migration.markerDir", toml.getOrDefault("markerDir", migrationMarkerDir)).trim();
         migrationRemapUuids = boolProp("ftbquestssync.migration.remapUuids", toml.getOrDefault("remapUuids", String.valueOf(migrationRemapUuids)), migrationRemapUuids);

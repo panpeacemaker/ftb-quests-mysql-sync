@@ -2,7 +2,6 @@ package net.agrarius.ftbquestssync.migration;
 
 import net.agrarius.ftbquestssync.FTBQuestsSync;
 import net.agrarius.ftbquestssync.MySQLBackend;
-import net.agrarius.ftbquestssync.RankSoloProgress;
 import net.minecraft.nbt.CompoundTag;
 
 import java.util.UUID;
@@ -13,22 +12,22 @@ import java.util.UUID;
  *
  * <p>The runtime keeps solo/rank progress per player in a dedicated table, not
  * in the team blob: every team-blob save runs through
- * {@link RankSoloProgress#stripRankSharedProgress(CompoundTag)} which deletes
- * solo task/quest entries from the blob. The legacy export stores everything in
+ * {@link net.agrarius.ftbquestssync.RankSoloProgress#stripRankSharedProgress(CompoundTag)}
+ * which deletes solo task/quest entries from the blob. The legacy export stores everything in
  * one flat {@code task_progress}/{@code completed} blob keyed by task id only,
  * so without this step the solo progress would be stripped on the first save
  * and never replayed (the {@code rank_progress} table would stay empty).
  *
  * <p>Must run after the quest file is loaded so the policy scan
- * ({@link RankSoloProgress#isRankTask}, {@link RankSoloProgress#questIdForTask})
+ * ({@link net.agrarius.ftbquestssync.RankSoloProgress#isRankTask}, {@link net.agrarius.ftbquestssync.RankSoloProgress#questIdForTask})
  * is available to classify tasks and resolve their owning quest.
  */
 public final class RankProgressMigrator {
 
     private RankProgressMigrator() {}
 
-    public static int migrate(UUID playerUuid, CompoundTag legacyTag, boolean dryRun) {
-        if (!RankSoloProgress.isInitialized()) {
+    public static int migrate(UUID playerUuid, CompoundTag legacyTag, boolean dryRun, MigrationSnapshot snapshot) {
+        if (!snapshot.rankInitialized) {
             FTBQuestsSync.LOGGER.warn(
                     "Rank progress migration skipped for player={}: RankSoloProgress not initialized (quest file not loaded)",
                     playerUuid);
@@ -45,10 +44,10 @@ public final class RankProgressMigrator {
         int written = 0;
         for (String taskHex : taskProgress.getAllKeys()) {
             long taskId = parseHexId(taskHex);
-            if (taskId == 0L || !RankSoloProgress.isRankTask(taskId)) {
+            if (taskId == 0L || !snapshot.rankTaskIds.contains(taskId)) {
                 continue;
             }
-            long questId = RankSoloProgress.questIdForTask(taskId);
+            long questId = snapshot.rankTaskToQuestId.getOrDefault(taskId, 0L);
             if (questId == 0L) {
                 continue;
             }

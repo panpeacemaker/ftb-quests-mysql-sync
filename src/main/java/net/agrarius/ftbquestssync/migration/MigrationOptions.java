@@ -17,15 +17,17 @@ public final class MigrationOptions {
     public final String mysqlHost;
     public final boolean remapUuids;
     public final String usercachePath;
+    public final boolean overwriteExisting;
 
     public MigrationOptions(boolean dryRun, int maxPlayers, String serverIdTag, String mysqlHost,
-                            boolean remapUuids, String usercachePath) {
+                            boolean remapUuids, String usercachePath, boolean overwriteExisting) {
         this.dryRun = dryRun;
         this.maxPlayers = maxPlayers;
         this.serverIdTag = serverIdTag == null || serverIdTag.isBlank() ? "migrator" : serverIdTag;
         this.mysqlHost = mysqlHost;
         this.remapUuids = remapUuids;
         this.usercachePath = usercachePath;
+        this.overwriteExisting = overwriteExisting;
     }
 
     public static MigrationOptions fromConfig() {
@@ -35,6 +37,7 @@ public final class MigrationOptions {
                 Config.migrationServerIdTag,
                 Config.migrationSourceMysqlHost,
                 Config.migrationRemapUuids,
-                Config.migrationUsercachePath);
+                Config.migrationUsercachePath,
+                Config.migrationOverwriteExisting);
     }
 }

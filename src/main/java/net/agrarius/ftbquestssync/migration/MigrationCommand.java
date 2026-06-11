@@ -61,16 +61,17 @@ public final class MigrationCommand {
         int maxPlayers = maxOverride != null ? maxOverride : Config.migrationMaxPlayers;
         MigrationOptions opts = new MigrationOptions(
                 dryRun, maxPlayers, Config.migrationServerIdTag, Config.migrationSourceMysqlHost,
-                Config.migrationRemapUuids, Config.migrationUsercachePath);
+                Config.migrationRemapUuids, Config.migrationUsercachePath,
+                Config.migrationOverwriteExisting);
 
         source.sendSuccess(() -> Component.literal(
                 "Starting legacy quest migration: dryRun=" + dryRun + " maxPlayers=" + maxPlayers), true);
         FTBQuestsSync.LOGGER.info("Manual migration requested by {}: dryRun={} maxPlayers={}",
                 source.getTextName(), dryRun, maxPlayers);
 
-        // Hand off to the migrator's own single-thread executor; the
-        // method itself is a guard against concurrent invocations.
-        new Thread(() -> LegacyQuestMigrator.runNow(opts),
+        // Snapshot FTB quest data on the server thread before handing off.
+        MigrationSnapshot snapshot = MigrationSnapshot.capture();
+        new Thread(() -> LegacyQuestMigrator.runNow(opts, snapshot),
                 "FTBQuestsSync-Migration-ManualDispatch").start();
         return Command.SINGLE_SUCCESS;
     }

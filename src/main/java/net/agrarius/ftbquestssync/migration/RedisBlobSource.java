@@ -42,8 +42,16 @@ public final class RedisBlobSource implements PlayerBlobSource {
     @Override
     public Map<UUID, byte[]> loadAll() throws Exception {
         Map<UUID, byte[]> out = new HashMap<>();
-        // Use the mod's existing pool; if Redis was never initialised we
-        // cannot bootstrap from it and abort with a clear error.
+        forEach((player, blob) -> {
+            out.putIfAbsent(player, blob);
+            return true;
+        });
+        return out;
+    }
+
+    @Override
+    public int forEach(BlobConsumer consumer) throws Exception {
+        int skippedOversized = 0;
         redis.clients.jedis.JedisPool pool = RedisSync.getInstance().getPool();
         try (Jedis jedis = pool.getResource()) {
             jedis.select(db);
@@ -61,17 +69,20 @@ public final class RedisBlobSource implements PlayerBlobSource {
                     byte[] raw = jedis.get(key.getBytes(StandardCharsets.UTF_8));
                     if (raw == null || raw.length == 0) continue;
                     if (raw.length > maxBlobBytes) {
+                        skippedOversized++;
                         FTBQuestsSync.LOGGER.warn(
                                 "Migration: skipping oversize Redis blob key={} bytes={} (cap={})",
                                 key, raw.length, maxBlobBytes);
                         continue;
                     }
-                    out.putIfAbsent(uuid, raw);
+                    if (!consumer.accept(uuid, raw)) {
+                        return skippedOversized;
+                    }
                 }
                 cursor = scan.getCursor();
             } while (!"0".equals(cursor));
         }
-        return out;
+        return skippedOversized;
     }
 
     @Override

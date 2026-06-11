@@ -228,6 +228,9 @@ public class MySQLBackend {
     private static final String SQL_SELECT_MIGRATED_TEAM_IDS =
             "SELECT team_id FROM ftbquests_teamdata WHERE server_id = ?";
 
+    private static final String SQL_SELECT_SERVER_ID =
+            "SELECT server_id FROM ftbquests_teamdata WHERE team_id = ?";
+
     private ConnectionProvider connectionProvider;
     private volatile boolean initialized;
     private final ExecutorService dbExecutor = new ThreadPoolExecutor(
@@ -279,15 +282,29 @@ public class MySQLBackend {
         }
     }
 
-    public static final class SaveResult {
+    public static class SaveResult {
         public final UUID teamId;
         public final long revision;
         public final String hashHex;
 
-        private SaveResult(UUID teamId, long revision, String hashHex) {
+        SaveResult(UUID teamId, long revision, String hashHex) {
             this.teamId = teamId;
             this.revision = revision;
             this.hashHex = hashHex;
+        }
+    }
+
+    /**
+     * Result from a migration write that distinguishes "skipped because a
+     * live row already exists with different content" from "written" or
+     * "skipped because hash unchanged".
+     */
+    public static final class MigrationSaveResult extends SaveResult {
+        public final boolean skippedExisting;
+
+        MigrationSaveResult(UUID teamId, long revision, String hashHex, boolean skippedExisting) {
+            super(teamId, revision, hashHex);
+            this.skippedExisting = skippedExisting;
         }
     }
 
@@ -572,9 +589,88 @@ public class MySQLBackend {
      * supplied {@code server_id} so imported rows can be distinguished
      * from live sync writes (default tag is {@code "migrator"}; see
      * {@code Config.migrationServerIdTag}).
+     *
+     * <p>When {@code overwriteExisting} is {@code false} (the default) and a
+     * row already exists for {@code teamId} with a <em>different</em> hash,
+     * the write is skipped and a {@link MigrationSaveResult} with
+     * {@code skippedExisting=true} is returned so the migrator can count it.
      */
-    public SaveResult saveTeamDataMigration(UUID teamId, CompoundTag tag, String serverIdTag) {
-        return saveTeamDataInternal(teamId, tag, serverIdTag);
+    public SaveResult saveTeamDataMigration(UUID teamId, CompoundTag tag, String serverIdTag, boolean overwriteExisting) {
+        if (!isAvailable()) return null;
+
+        try (Connection conn = connectionProvider.getConnection()) {
+            CompoundTag sanitized = tag.copy();
+            RankSoloProgress.stripRankSharedProgress(sanitized);
+            ByteArrayOutputStream buf = new ByteArrayOutputStream();
+            NbtCompat.writeCompressed(sanitized, buf);
+            byte[] bytes = buf.toByteArray();
+            byte[] hash = MessageDigest.getInstance("SHA-256").digest(bytes);
+            String hashHex = HexFormat.of().formatHex(hash);
+
+            SaveResult existing = loadMeta(conn, teamId, hash);
+            if (shouldSkipMigrationWrite(existing, hash, overwriteExisting)) {
+                if (existing.hashHex != null && java.util.Arrays.equals(
+                        HexFormat.of().parseHex(existing.hashHex), hash)) {
+                    FTBQuestsSync.LOGGER.info(
+                            "Skipped FTB team data write to MySQL (content unchanged): team={} revision={} hash={} serverId={}",
+                            teamId, existing.revision, existing.hashHex, serverIdTag);
+                    return existing;
+                }
+                String existingServerId = loadExistingServerId(conn, teamId);
+                FTBQuestsSync.LOGGER.warn(
+                        "Migration skipped existing team row with different content: teamId={} existingRevision={} existingServerId={}",
+                        teamId, existing.revision, existingServerId);
+                return new MigrationSaveResult(teamId, existing.revision, existing.hashHex, true);
+            }
+
+            try (PreparedStatement ps = conn.prepareStatement(SQL_UPSERT)) {
+                ps.setString(1, teamId.toString());
+                ps.setBytes(2, bytes);
+                ps.setBytes(3, hash);
+                ps.setString(4, serverIdTag);
+                int rows = ps.executeUpdate();
+
+                SaveResult meta = loadMeta(conn, teamId, hash);
+                FTBQuestsSync.LOGGER.info(
+                        "Saved FTB team data to MySQL: team={} bytes={} rows={} revision={} hash={} serverId={}",
+                        teamId, bytes.length, rows, meta.revision, meta.hashHex, serverIdTag);
+                return meta;
+            }
+        } catch (Exception e) {
+            FTBQuestsSync.LOGGER.error("MySQL save failed for team {}", teamId, e);
+            return null;
+        }
+    }
+
+    private String loadExistingServerId(Connection conn, UUID teamId) throws Exception {
+        try (PreparedStatement ps = conn.prepareStatement(SQL_SELECT_SERVER_ID)) {
+            ps.setString(1, teamId.toString());
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getString(1);
+                }
+            }
+        }
+        return "unknown";
+    }
+
+    /**
+     * Pure skip-decision logic extracted for unit testing.
+     *
+     * @return true when the migration write should be skipped:
+     *         - row exists (revision &gt; 0) AND hash is identical (idempotent), OR
+     *         - row exists AND hash differs AND overwriteExisting is false
+     */
+    static boolean shouldSkipMigrationWrite(SaveResult existing, byte[] newHash, boolean overwriteExisting) {
+        if (existing == null || existing.revision <= 0) {
+            return false;
+        }
+        boolean sameHash = existing.hashHex != null && java.util.Arrays.equals(
+                HexFormat.of().parseHex(existing.hashHex), newHash);
+        if (sameHash) {
+            return true;
+        }
+        return !overwriteExisting;
     }
 
     private SaveResult saveTeamDataInternal(UUID teamId, CompoundTag tag, String serverId) {

@@ -56,6 +56,7 @@ public final class MysqlBlobSource implements PlayerBlobSource {
     private final String idPlayerColumn;
     private final String dataColumn;
     private final String createdAtColumn;
+    private final int maxBlobBytes;
 
     public MysqlBlobSource() {
         this(
@@ -65,13 +66,15 @@ public final class MysqlBlobSource implements PlayerBlobSource {
                 Config.migrationSourceMysqlPlayersTable, Config.migrationSourceMysqlDataTable,
                 Config.migrationSourceMysqlUuidColumn, Config.migrationSourceMysqlIdColumn,
                 Config.migrationSourceMysqlIdPlayerColumn, Config.migrationSourceMysqlDataColumn,
-                Config.migrationSourceMysqlCreatedAtColumn);
+                Config.migrationSourceMysqlCreatedAtColumn,
+                Config.migrationMaxBlobBytes);
     }
 
     public MysqlBlobSource(String host, int port, String db, String user, String password,
                            String playersTable, String dataTable,
                            String uuidColumn, String idColumn, String idPlayerColumn,
-                           String dataColumn, String createdAtColumn) {
+                           String dataColumn, String createdAtColumn,
+                           int maxBlobBytes) {
         if (host == null || host.isBlank()) {
             throw new IllegalArgumentException("Migration source MySQL host is blank");
         }
@@ -86,16 +89,22 @@ public final class MysqlBlobSource implements PlayerBlobSource {
         this.idPlayerColumn = requireIdent(idPlayerColumn, "idPlayerColumn");
         this.dataColumn = requireIdent(dataColumn, "dataColumn");
         this.createdAtColumn = requireIdent(createdAtColumn, "createdAtColumn");
+        this.maxBlobBytes = maxBlobBytes;
     }
 
     @Override
-    public Map<UUID, byte[]> loadAll() throws SQLException {
+    public Map<UUID, byte[]> loadAll() throws Exception {
         Map<UUID, byte[]> out = new HashMap<>();
-        // Pick exactly one snapshot per player: the newest created_at, breaking
-        // ties on the highest id. Without the id tie-break, two snapshots sharing
-        // the same created_at both match the MAX(created_at) join and the chosen
-        // row becomes JDBC-order-dependent (non-deterministic) — on a real source
-        // that can silently import an older/wrong blob.
+        forEach((player, blob) -> {
+            out.putIfAbsent(player, blob);
+            return true;
+        });
+        return out;
+    }
+
+    @Override
+    public int forEach(BlobConsumer consumer) throws Exception {
+        int skippedOversized = 0;
         String query = "SELECT p." + uuidColumn + " AS uuid, d." + dataColumn + " AS data "
                 + "FROM " + playersTable + " p "
                 + "JOIN " + dataTable + " d ON d." + idPlayerColumn + " = p." + idColumn + " "
@@ -116,12 +125,21 @@ public final class MysqlBlobSource implements PlayerBlobSource {
                 String raw = rs.getString("uuid");
                 byte[] data = rs.getBytes("data");
                 if (raw == null || data == null) continue;
+                if (data.length > maxBlobBytes) {
+                    skippedOversized++;
+                    FTBQuestsSync.LOGGER.warn(
+                            "Migration: skipping oversize MariaDB blob uuid={} bytes={} (cap={})",
+                            raw, data.length, maxBlobBytes);
+                    continue;
+                }
                 UUID uuid = parseUuid(raw);
                 if (uuid == null) continue;
-                out.putIfAbsent(uuid, data);
+                if (!consumer.accept(uuid, data)) {
+                    return skippedOversized;
+                }
             }
         }
-        return out;
+        return skippedOversized;
     }
 
     @Override

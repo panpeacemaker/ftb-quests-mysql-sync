@@ -1,13 +1,9 @@
 package net.agrarius.ftbquestssync.migration;
 
-import dev.ftb.mods.ftbquests.quest.Quest;
-import dev.ftb.mods.ftbquests.quest.ServerQuestFile;
-import dev.ftb.mods.ftbquests.quest.reward.Reward;
 import net.agrarius.ftbquestssync.Config;
 import net.agrarius.ftbquestssync.FTBQuestsSync;
 import net.agrarius.ftbquestssync.MembershipCache;
 import net.agrarius.ftbquestssync.MySQLBackend;
-import net.agrarius.ftbquestssync.RankSoloProgress;
 import net.minecraft.nbt.CompoundTag;
 
 import java.util.UUID;
@@ -38,10 +34,9 @@ public final class RewardClaimScopeSeeder {
     private RewardClaimScopeSeeder() {}
 
     public static int seedFromBlob(UUID teamId, UUID playerUuid, CompoundTag legacyTag,
-                                   String serverIdTag, boolean dryRun) {
-        ServerQuestFile file = ServerQuestFile.INSTANCE;
-        if (file == null) {
-            FTBQuestsSync.LOGGER.warn("seedFromBlob: quest file not loaded; skipping team={}", teamId);
+                                   String serverIdTag, boolean dryRun, MigrationSnapshot snapshot) {
+        if (snapshot.rewardMeta == null || snapshot.rewardMeta.isEmpty()) {
+            FTBQuestsSync.LOGGER.warn("seedFromBlob: no reward metadata captured; skipping team={}", teamId);
             return 0;
         }
         if (legacyTag == null || !legacyTag.contains("claimed_rewards", 10)) {
@@ -62,19 +57,21 @@ public final class RewardClaimScopeSeeder {
             if (rewardId == 0L) {
                 continue;
             }
-            Reward reward = file.getReward(rewardId);
-            if (reward == null || reward.getQuest() == null) {
+            MigrationSnapshot.RewardMeta meta = snapshot.rewardMeta.get(rewardId);
+            if (meta == null) {
                 continue;
             }
-            Quest quest = reward.getQuest();
-            long chapterId = quest.getChapter() != null ? quest.getChapter().getId() : 0L;
+            long questId = meta.questId;
+            long chapterId = meta.chapterId;
+            boolean teamReward = meta.teamReward;
+            boolean repeatable = meta.repeatable;
 
             boolean teamClaimOverride = Config.teamClaimChapterIds.contains(chapterId);
             boolean teamShared = Config.teamSharedChapterIds.contains(chapterId) && !teamClaimOverride;
-            boolean rankQuestReward = RankSoloProgress.isRankQuest(quest.id);
+            boolean rankQuestReward = snapshot.rankQuestIds.contains(questId);
             boolean soloChapter = Config.soloChapterIds.contains(chapterId) && !teamClaimOverride && !teamShared;
             boolean soloScopedReward = (rankQuestReward || soloChapter) && Config.soloRewardsPerPlayer;
-            boolean effectiveTeamReward = reward.isTeamReward();
+            boolean effectiveTeamReward = teamReward;
 
             if (!soloScopedReward && !teamClaimOverride && !teamShared && !effectiveTeamReward) {
                 continue;
@@ -84,8 +81,15 @@ public final class RewardClaimScopeSeeder {
             UUID scopeUuid = "TEAM".equals(scopeType)
                     ? MembershipCache.resolveTeam(playerUuid, teamId)
                     : playerUuid;
-            long cycle = completionCycle(quest, completionCount, completed,
-                    teamClaimOverride || teamShared);
+            long cycle = 0L;
+            if (teamClaimOverride || teamShared) {
+                String questHex = hexId(questId);
+                if (repeatable) {
+                    cycle = completionCount.getLong(questHex);
+                } else {
+                    cycle = completed.contains(questHex) ? 1L : 0L;
+                }
+            }
             long claimedAtMs = claimed.getLong(claimKey);
             if (claimedAtMs <= 0L) {
                 claimedAtMs = now;
@@ -104,18 +108,6 @@ public final class RewardClaimScopeSeeder {
                     teamId, playerUuid, written, dryRun);
         }
         return written;
-    }
-
-    private static long completionCycle(Quest quest, CompoundTag completionCount,
-                                        CompoundTag completed, boolean scoped) {
-        if (!scoped) {
-            return 0L;
-        }
-        String questHex = hexId(quest.id);
-        if (quest.canBeRepeated()) {
-            return completionCount.getLong(questHex);
-        }
-        return completed.contains(questHex) ? 1L : 0L;
     }
 
     private static long rewardIdFromClaimKey(String claimKey) {

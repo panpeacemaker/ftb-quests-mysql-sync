@@ -27,7 +27,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * with the real {@code serverId} (so it tags the rows as
  * "agr1" or "agr2" depending on which peer this ran on).
  *
- * Use on both agr1 and agr2 when the two backends are still hosting
+ * <p>Use on both agr1 and agr2 when the two backends are still hosting
  * separate per-server teams; the rows reconcile in the database by
  * {@code team_id} primary key.
  */
@@ -39,6 +39,8 @@ public final class ImportTeamsCommand {
             new SimpleCommandExceptionType(Component.literal("FTB Sync MySQL is unavailable."));
     private static final SimpleCommandExceptionType NO_TEAMS_API =
             new SimpleCommandExceptionType(Component.literal("FTB Teams API is not loaded yet."));
+    private static final SimpleCommandExceptionType ALREADY_RUNNING =
+            new SimpleCommandExceptionType(Component.literal("A migration or import is already in progress."));
 
     private ImportTeamsCommand() {
     }
@@ -54,21 +56,22 @@ public final class ImportTeamsCommand {
         if (!source.hasPermission(2)) throw NOT_OP.create();
         MySQLBackend db = MySQLBackend.getInstance();
         if (!db.isAvailable()) throw NO_DB.create();
+        if (!MigrationGuard.tryAcquire()) throw ALREADY_RUNNING.create();
 
         TeamManager mgr;
         try {
             mgr = FTBTeamsAPI.api().getManager();
         } catch (Throwable t) {
+            MigrationGuard.release();
             throw NO_TEAMS_API.create();
         }
-        if (mgr == null) throw NO_TEAMS_API.create();
+        if (mgr == null) {
+            MigrationGuard.release();
+            throw NO_TEAMS_API.create();
+        }
 
         String serverId = RedisSync.getInstance().getServerId();
 
-        // Snapshot all team data on the server thread (FTB Teams API
-        // must be touched on the server thread; calling it from a
-        // background thread is undefined and crashes the FTB Teams
-        // world state).
         List<TeamSnapshot> snapshots = new ArrayList<>();
         for (Team team : mgr.getTeams()) {
             try {
@@ -96,11 +99,13 @@ public final class ImportTeamsCommand {
         FTBQuestsSync.LOGGER.info("/ftbsync importteams requested by {} on serverId={} (teams={})",
                 source.getTextName(), serverId, snapshots.size());
 
-        // DB writes run on a background thread; the DB layer's own
-        // executors serialise per-row work. Use the future-returning
-        // upsert methods so we can count actual completions rather
-        // than enqueues.
-        Thread t = new Thread(() -> doImport(snapshots, serverId), "FTBQuestsSync-ImportTeams");
+        Thread t = new Thread(() -> {
+            try {
+                doImport(snapshots, serverId);
+            } finally {
+                MigrationGuard.release();
+            }
+        }, "FTBQuestsSync-ImportTeams");
         t.setDaemon(true);
         t.start();
         return Command.SINGLE_SUCCESS;
@@ -118,12 +123,6 @@ public final class ImportTeamsCommand {
                     teamsWritten.incrementAndGet();
                     for (UUID memberUuid : s.members) {
                         String rank = "MEMBER";
-                        // Rank lookup is part of the snapshot (server-thread
-                        // work), so we cannot know it here without an extra
-                        // round trip. The default rank "MEMBER" is the
-                        // correct neutral default for an import: a player
-                        // who actually has OFFICER/OWNER rank can be
-                        // re-promoted on first login.
                         pending.add(MySQLBackend.getInstance().upsertMembershipFuture(
                                 memberUuid, s.teamId, rank));
                         membershipsWritten.incrementAndGet();
