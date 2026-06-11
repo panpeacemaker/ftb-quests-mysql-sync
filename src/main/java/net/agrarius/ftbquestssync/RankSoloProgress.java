@@ -128,6 +128,21 @@ public final class RankSoloProgress {
         return repeatableSoloQuestIds.contains(questId);
     }
 
+    public static boolean isInitialized() {
+        return initialized;
+    }
+
+    /**
+     * Resolves the owning quest id for a task id from the policy scan built at
+     * {@link #init()}. Returns 0 when the task is unknown. The legacy migrator
+     * needs this to translate a flat {@code task_progress} blob (keyed by task
+     * id only) into the {@code rank_progress} rows the runtime expects, which
+     * are keyed by both quest id and task id.
+     */
+    public static long questIdForTask(long taskId) {
+        return taskToQuestMap.getOrDefault(taskId, 0L);
+    }
+
     private static long getTaskProgress(UUID playerUuid, long taskId) {
         Map<Long, Long> map = taskProgressByPlayer.get(playerUuid);
         return map == null ? 0L : map.getOrDefault(taskId, 0L);
