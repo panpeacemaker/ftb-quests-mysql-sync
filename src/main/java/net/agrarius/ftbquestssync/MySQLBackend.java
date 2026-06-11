@@ -6,6 +6,7 @@ import net.agrarius.ftbquestssync.persistence.ConnectionProvider;
 import net.agrarius.ftbquestssync.persistence.SchemaManager;
 import net.agrarius.ftbquestssync.quests.RankProgressRepository;
 import net.agrarius.ftbquestssync.quests.RewardClaimRepository;
+import net.agrarius.ftbquestssync.chunks.ChunkClaimRecord;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;

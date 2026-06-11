@@ -41,6 +41,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import net.agrarius.ftbquestssync.chunks.ChunkMaterializer;
+
 public class RedisSync {
 
     private static final RedisSync INSTANCE = new RedisSync();

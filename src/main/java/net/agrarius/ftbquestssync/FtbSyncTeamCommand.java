@@ -20,6 +20,8 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import net.agrarius.ftbquestssync.chunks.ChunkLimitPatcher;
+
 public final class FtbSyncTeamCommand {
 
     private static final SimpleCommandExceptionType NO_PARTY =

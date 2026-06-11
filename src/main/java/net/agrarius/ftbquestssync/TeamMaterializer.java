@@ -19,6 +19,8 @@ import java.util.UUID;
 import net.minecraft.server.MinecraftServer;
 import net.minecraftforge.server.ServerLifecycleHooks;
 
+import net.agrarius.ftbquestssync.chunks.ChunkMaterializer;
+
 /**
  * Reflection bridge for materializing FTB Teams across servers.
  *
