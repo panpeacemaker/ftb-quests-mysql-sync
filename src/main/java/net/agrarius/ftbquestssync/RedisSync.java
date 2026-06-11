@@ -21,6 +21,7 @@ import net.minecraft.Util;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import com.google.gson.Gson;
 import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
@@ -43,7 +44,8 @@ import java.util.concurrent.Executors;
 public class RedisSync {
 
     private static final RedisSync INSTANCE = new RedisSync();
-    private static final String CHANNEL = "agrarius:quests:team-updated";
+    private static final String QUEST_CHANNEL = "agrarius:quests:team-updated";
+    private static final String CHUNK_CHANNEL = "agrarius:chunks:claims-updated";
     private static final long SEEN_EVENT_TTL_MS = 10 * 60 * 1_000L;
 
     private final String fallbackServerId;
@@ -93,8 +95,8 @@ public class RedisSync {
                 return t;
             });
             subscriberExec.submit(this::subscribeLoop);
-            FTBQuestsSync.LOGGER.info("Redis ready: {}:{} channel={} serverId={}",
-                    Config.redisHost, Config.redisPort, CHANNEL, getServerId());
+            FTBQuestsSync.LOGGER.info("Redis ready: {}:{} questChannel={} chunkChannel={} serverId={}",
+                    Config.redisHost, Config.redisPort, QUEST_CHANNEL, CHUNK_CHANNEL, getServerId());
         } catch (Exception e) {
             enabled = false;
             FTBQuestsSync.LOGGER.error("Redis init failed - cross-server live invalidation disabled", e);
@@ -108,9 +110,9 @@ public class RedisSync {
                 subscriberConn.subscribe(new JedisPubSub() {
                     @Override
                     public void onMessage(String channel, String message) {
-                        handleRemoteUpdate(message);
+                        handleMessage(channel, message);
                     }
-                }, CHANNEL);
+                }, QUEST_CHANNEL, CHUNK_CHANNEL);
             } catch (Exception e) {
                 if (!enabled) continue;
                 FTBQuestsSync.LOGGER.warn("Redis subscriber error, reconnecting in 5s", e);
@@ -136,16 +138,18 @@ public class RedisSync {
 
         try (Jedis jedis = pool.getResource()) {
             String eventId = UUID.randomUUID().toString();
-            String payload = "{"
-                    + "\"eventId\":\"" + eventId + "\","
-                    + "\"sourceServer\":\"" + escapeJson(getServerId()) + "\","
-                    + "\"entityType\":\"quest_team\","
-                    + "\"entityId\":\"" + teamId + "\","
-                    + "\"revision\":" + revision + ","
-                    + "\"hash\":\"" + escapeJson(hashHex) + "\","
-                    + "\"reason\":\"saveIfChanged\""
-                    + "}";
-            jedis.publish(CHANNEL, payload);
+            QuestTeamUpdateEvent event = new QuestTeamUpdateEvent(
+                    UUID.fromString(eventId),
+                    getServerId(),
+                    "quest_team",
+                    teamId,
+                    revision,
+                    hashHex,
+                    "saveIfChanged",
+                    false
+            );
+            String payload = RedisEventParser.GSON.toJson(event);
+            jedis.publish(QUEST_CHANNEL, payload);
             FTBQuestsSync.LOGGER.info("Published Redis team update: {}", payload);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("Redis publish failed for {}", teamId, e);
@@ -155,121 +159,79 @@ public class RedisSync {
     public void publishChunkUpdate(String reason, UUID teamId) {
         if (!enabled || !Config.syncChunks) return;
 
-        String payload = getServerId() + "|" + reason + "|" + teamId + "|-";
+        ChunkClaimsUpdateEvent event = new ChunkClaimsUpdateEvent(getServerId(), reason, teamId);
+        String payload = RedisEventParser.GSON.toJson(event);
         try (Jedis jedis = pool.getResource()) {
-            jedis.publish(CHANNEL, payload);
+            jedis.publish(CHUNK_CHANNEL, payload);
             FTBQuestsSync.LOGGER.info("Published Redis chunk invalidation: {}", payload);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("Redis chunk publish failed: {}", payload, e);
         }
     }
 
-    private void handleRemoteUpdate(String message) {
+    private void handleMessage(String channel, String message) {
         try {
-            if (handleChunkMessage(message)) return;
-            if (!Config.syncQuests) return;
-            pruneSeenEvents();
-            RemoteEvent event = parseEvent(message);
-            if (event == null) return;
-
-            if (getServerId().equals(event.sourceServer)) return;
-            if (seenEvents.putIfAbsent(event.eventId, System.currentTimeMillis()) != null) return;
-            if (server == null) return;
-
-            FTBQuestsSync.LOGGER.info("Received remote Redis team update: source={} team={} revision={} hash={} forceReplace={}",
-                    event.sourceServer, event.teamId, event.revision, event.hashHex, event.forceReplace);
-            MySQLBackend.getInstance().loadTeamDataAsync(event.teamId).whenComplete((fresh, error) -> {
-                if (error != null) {
-                    FTBQuestsSync.LOGGER.error("Async MySQL load failed for remote team {}", event.teamId, error);
-                    return;
+            if (CHUNK_CHANNEL.equals(channel)) {
+                handleChunkJson(message);
+            } else if (QUEST_CHANNEL.equals(channel)) {
+                // Legacy compatibility (one-release window): old nodes may still send
+                // pipe-delimited chunk payloads on the quest channel.
+                // TODO: remove this fallback in the next minor release.
+                if (RedisEventParser.isLegacyChunkPayload(message)) {
+                    handleLegacyChunk(message);
+                } else {
+                    handleQuestEvent(message);
                 }
-                if (fresh == null) return;
-                server.execute(() -> applyRemoteUpdate(event.teamId, fresh, event.forceReplace));
-            });
+            }
         } catch (Exception e) {
-            FTBQuestsSync.LOGGER.warn("Bad Redis message: {}", message, e);
+            FTBQuestsSync.LOGGER.warn("Bad Redis message on channel={}: {}", channel, message, e);
         }
     }
 
-    private boolean handleChunkMessage(String message) {
-        String[] parts = message.split("\\|", 4);
-        if (parts.length < 4 || !parts[1].startsWith("chunks_")) return false;
-        if (!Config.syncChunks) return true;
-        String sourceServer = parts[0];
-        if (getServerId().equals(sourceServer)) return true;
-        UUID teamId = UUID.fromString(parts[2]);
+    private void handleChunkJson(String message) {
+        if (!Config.syncChunks) return;
+        ChunkClaimsUpdateEvent event = RedisEventParser.parseChunkEvent(message);
+        if (event == null) return;
+        if (getServerId().equals(event.serverId())) return;
         FTBQuestsSync.LOGGER.info("Received remote chunk invalidation: source={} reason={} team={}",
-                sourceServer, parts[1], teamId);
-        ChunkMaterializer.materializeTeam(teamId);
-        return true;
+                event.serverId(), event.reason(), event.teamId());
+        ChunkMaterializer.materializeTeam(event.teamId());
     }
 
-    private RemoteEvent parseEvent(String message) {
-        String trimmed = message.trim();
-        if (!trimmed.startsWith("{")) {
-            int colon = message.indexOf(':');
-            if (colon <= 0) return null;
-            return new RemoteEvent(UUID.randomUUID(), message.substring(0, colon),
-                    UUID.fromString(message.substring(colon + 1)), -1L, "", false);
+    private void handleLegacyChunk(String message) {
+        if (!Config.syncChunks) return;
+        ChunkClaimsUpdateEvent event = RedisEventParser.parseLegacyChunkEvent(message);
+        if (event == null) return;
+        if (getServerId().equals(event.serverId())) return;
+        FTBQuestsSync.LOGGER.info("Received remote chunk invalidation: source={} reason={} team={}",
+                event.serverId(), event.reason(), event.teamId());
+        ChunkMaterializer.materializeTeam(event.teamId());
+    }
+
+    private void handleQuestEvent(String message) {
+        if (!Config.syncQuests) return;
+        pruneSeenEvents();
+        QuestTeamUpdateEvent parsed = RedisEventParser.parseQuestEvent(message);
+        if (parsed == null) {
+            parsed = RedisEventParser.parseLegacyQuestEvent(message);
         }
-        UUID eventId = UUID.fromString(jsonValue(trimmed, "eventId"));
-        String sourceServer = jsonValue(trimmed, "sourceServer");
-        UUID teamId = UUID.fromString(jsonValue(trimmed, "entityId"));
-        long revision = Long.parseLong(jsonNumber(trimmed, "revision", "-1"));
-        String hash = jsonValue(trimmed, "hash");
-        boolean forceReplace = jsonBool(trimmed, "forceReplace");
-        return new RemoteEvent(eventId, sourceServer, teamId, revision, hash, forceReplace);
-    }
+        if (parsed == null) return;
+        final QuestTeamUpdateEvent event = parsed;
 
-    private static String jsonValue(String json, String key) {
-        String needle = "\"" + key + "\":\"";
-        int start = json.indexOf(needle);
-        if (start < 0) return "";
-        start += needle.length();
-        int end = json.indexOf('"', start);
-        return end < 0 ? "" : json.substring(start, end).replace("\\\"", "\"").replace("\\\\", "\\");
-    }
+        if (getServerId().equals(event.sourceServer())) return;
+        if (seenEvents.putIfAbsent(event.eventId(), System.currentTimeMillis()) != null) return;
+        if (server == null) return;
 
-    private static String jsonNumber(String json, String key, String fallback) {
-        String needle = "\"" + key + "\":";
-        int start = json.indexOf(needle);
-        if (start < 0) return fallback;
-        start += needle.length();
-        int end = start;
-        while (end < json.length() && Character.isDigit(json.charAt(end))) end++;
-        return end == start ? fallback : json.substring(start, end);
-    }
-
-    private static boolean jsonBool(String json, String key) {
-        int k = json.indexOf("\"" + key + "\"");
-        if (k < 0) return false;
-        int colon = json.indexOf(':', k);
-        if (colon < 0) return false;
-        int i = colon + 1;
-        while (i < json.length() && Character.isWhitespace(json.charAt(i))) i++;
-        return json.startsWith("true", i) || json.startsWith("\"true\"", i);
-    }
-
-    private static String escapeJson(String value) {
-        return value.replace("\\", "\\\\").replace("\"", "\\\"");
-    }
-
-    private static final class RemoteEvent {
-        private final UUID eventId;
-        private final String sourceServer;
-        private final UUID teamId;
-        private final long revision;
-        private final String hashHex;
-        private final boolean forceReplace;
-
-        private RemoteEvent(UUID eventId, String sourceServer, UUID teamId, long revision, String hashHex, boolean forceReplace) {
-            this.eventId = eventId;
-            this.sourceServer = sourceServer;
-            this.teamId = teamId;
-            this.revision = revision;
-            this.hashHex = hashHex;
-            this.forceReplace = forceReplace;
-        }
+        FTBQuestsSync.LOGGER.info("Received remote Redis team update: source={} team={} revision={} hash={} forceReplace={}",
+                event.sourceServer(), event.teamId(), event.revision(), event.hashHex(), event.forceReplace());
+        MySQLBackend.getInstance().loadTeamDataAsync(event.teamId()).whenComplete((fresh, error) -> {
+            if (error != null) {
+                FTBQuestsSync.LOGGER.error("Async MySQL load failed for remote team {}", event.teamId(), error);
+                return;
+            }
+            if (fresh == null) return;
+            server.execute(() -> applyRemoteUpdate(event.teamId(), fresh, event.forceReplace()));
+        });
     }
 
     public void forceReloadAndPushTo(UUID teamId, ServerPlayer recipient) {
