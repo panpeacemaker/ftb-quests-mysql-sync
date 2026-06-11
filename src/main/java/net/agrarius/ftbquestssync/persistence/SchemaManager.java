@@ -1,4 +1,6 @@
-package net.agrarius.ftbquestssync;
+package net.agrarius.ftbquestssync.persistence;
+
+import net.agrarius.ftbquestssync.FTBQuestsSync;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -6,11 +8,11 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 
-final class SchemaManager {
+public final class SchemaManager {
 
     private final ConnectionProvider connectionProvider;
 
-    SchemaManager(ConnectionProvider connectionProvider) {
+    public SchemaManager(ConnectionProvider connectionProvider) {
         this.connectionProvider = connectionProvider;
     }
 
@@ -146,7 +148,7 @@ final class SchemaManager {
             + "PRIMARY KEY (team_id, invited_uuid), KEY idx_invited_uuid (invited_uuid), KEY idx_team_id (team_id)"
             + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-    void ensureSchema() throws Exception {
+    public void ensureSchema() throws Exception {
         try (Connection conn = connectionProvider.getConnection();
              Statement st = conn.createStatement()) {
             st.execute(SQL_CREATE);

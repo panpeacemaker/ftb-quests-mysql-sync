@@ -2,6 +2,11 @@ package net.agrarius.ftbquestssync;
 
 import net.minecraft.nbt.CompoundTag;
 
+import net.agrarius.ftbquestssync.persistence.ConnectionProvider;
+import net.agrarius.ftbquestssync.persistence.SchemaManager;
+import net.agrarius.ftbquestssync.quests.RankProgressRepository;
+import net.agrarius.ftbquestssync.quests.RewardClaimRepository;
+
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.sql.Connection;
@@ -70,28 +75,11 @@ public class MySQLBackend {
     private static final String SQL_SELECT_TEAMDATA_META_FOR_UPDATE =
             "SELECT data, revision, data_hash FROM ftbquests_teamdata WHERE team_id = ? FOR UPDATE";
 
-    private static final String SQL_TRY_CLAIM_SCOPED =
-            "INSERT IGNORE INTO ftbquests_reward_claim_scopes "
-            + "(scope_type, scope_uuid, reward_id, cycle, state, team_id, claimed_at_ms, granted_by_server) "
-            + "VALUES (?, ?, ?, ?, 'GRANTED', ?, ?, ?)";
-
     private static final String SQL_CLONE_TEAM_SCOPED_CLAIMS =
             "INSERT IGNORE INTO ftbquests_reward_claim_scopes "
             + "(scope_type, scope_uuid, reward_id, cycle, state, team_id, claimed_at_ms, granted_by_server) "
             + "SELECT scope_type, ?, reward_id, cycle, state, team_id, claimed_at_ms, granted_by_server "
             + "FROM ftbquests_reward_claim_scopes WHERE scope_type='TEAM' AND scope_uuid=?";
-
-    private static final String SQL_DELETE_CLAIM =
-            "DELETE FROM ftbquests_reward_claims WHERE team_id=? AND reward_id=? AND claim_uuid=?";
-
-    private static final String SQL_DELETE_ALL_CLAIMS_FOR_REWARD =
-            "DELETE FROM ftbquests_reward_claims WHERE team_id=? AND reward_id=?";
-
-    private static final String SQL_DELETE_CLAIM_SCOPED =
-            "DELETE FROM ftbquests_reward_claim_scopes WHERE scope_type=? AND scope_uuid=? AND reward_id=?";
-
-    private static final String SQL_DELETE_ALL_CLAIMS_SCOPED_FOR_REWARD =
-            "DELETE FROM ftbquests_reward_claim_scopes WHERE team_id=? AND reward_id=?";
 
     private static final String SQL_UPSERT_TEAM_INFO =
             "INSERT INTO ftbquests_team_info (team_id, team_type, team_name, owner_uuid, team_color, deleted, updated_by_server) "
@@ -146,24 +134,6 @@ public class MySQLBackend {
 
     private static final String SQL_DEMOTE_OTHER_OWNERS =
             "UPDATE ftbquests_team_membership SET rank='OFFICER', updated_by_server=? WHERE team_id=? AND player_uuid<>? AND rank='OWNER'";
-
-    private static final String SQL_UPSERT_RANK_PROGRESS =
-            "INSERT INTO ftbquests_rank_progress "
-            + "(player_uuid, quest_id, task_id, progress, completed_at_ms, updated_by_server) "
-            + "VALUES (?, ?, ?, ?, ?, ?) "
-            + "ON DUPLICATE KEY UPDATE "
-            + "progress=VALUES(progress), "
-            + "completed_at_ms=CASE "
-            + "WHEN VALUES(completed_at_ms)=0 THEN 0 "
-            + "WHEN completed_at_ms=0 THEN VALUES(completed_at_ms) "
-            + "ELSE completed_at_ms END, "
-            + "updated_by_server=VALUES(updated_by_server)";
-
-    private static final String SQL_SELECT_RANK_PROGRESS =
-            "SELECT quest_id, task_id, progress, completed_at_ms FROM ftbquests_rank_progress WHERE player_uuid=?";
-
-    private static final String SQL_DELETE_RANK_PROGRESS =
-            "DELETE FROM ftbquests_rank_progress WHERE player_uuid=? AND quest_id=?";
 
     private static final String SQL_UPSERT_CHUNK_CLAIM =
             "INSERT INTO ftbchunks_team_claims "
@@ -232,6 +202,8 @@ public class MySQLBackend {
             "SELECT server_id FROM ftbquests_teamdata WHERE team_id = ?";
 
     private ConnectionProvider connectionProvider;
+    private RewardClaimRepository rewardClaimRepository;
+    private RankProgressRepository rankProgressRepository;
     private volatile boolean initialized;
     private final ExecutorService dbExecutor = new ThreadPoolExecutor(
             1,
@@ -270,6 +242,8 @@ public class MySQLBackend {
 
             connectionProvider = new ConnectionProvider();
             connectionProvider.open();
+            rewardClaimRepository = new RewardClaimRepository(connectionProvider);
+            rankProgressRepository = new RankProgressRepository(connectionProvider);
             new SchemaManager(connectionProvider).ensureSchema();
             initialized = true;
 
@@ -334,7 +308,7 @@ public class MySQLBackend {
         public final boolean firstClaim;
         public final boolean cycleComplete;
 
-        private ScopedClaimResult(boolean firstClaim, boolean cycleComplete) {
+        public ScopedClaimResult(boolean firstClaim, boolean cycleComplete) {
             this.firstClaim = firstClaim;
             this.cycleComplete = cycleComplete;
         }
@@ -367,37 +341,7 @@ public class MySQLBackend {
                     + "(team={} reward={} scopeType={} scopeUuid={} cycle={})", teamId, rewardId, scopeType, scopeUuid, cycle);
             return new ScopedClaimResult(!Config.rewardFailClosed, false);
         }
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_TRY_CLAIM_SCOPED)) {
-
-            ps.setString(1, scopeType);
-            ps.setString(2, scopeUuid.toString());
-            ps.setLong(3, rewardId);
-            ps.setLong(4, cycle);
-            ps.setString(5, teamId.toString());
-            ps.setLong(6, claimedAtMs);
-            ps.setString(7, RedisSync.getInstance().getServerId());
-            int rows = ps.executeUpdate();
-            long[] cycleRewardIds = questRewardIds == null ? new long[]{rewardId} : questRewardIds;
-
-            if (rows == 0) {
-                FTBQuestsSync.LOGGER.info(
-                        "Reward claim REFUSED (duplicate): team={} reward={} scopeType={} scopeUuid={} cycle={}",
-                        teamId, rewardId, scopeType, scopeUuid, cycle);
-                return new ScopedClaimResult(false, false);
-            }
-            boolean cycleComplete = cycleRewardIds.length > 0
-                    && countClaimsInCycle(conn, scopeType, scopeUuid, cycle, cycleRewardIds) >= cycleRewardIds.length;
-            FTBQuestsSync.LOGGER.info(
-                    "Reward claim GRANTED (first): team={} reward={} scopeType={} scopeUuid={} cycle={} cycleComplete={} server={}",
-                    teamId, rewardId, scopeType, scopeUuid, cycle, cycleComplete, RedisSync.getInstance().getServerId());
-            return new ScopedClaimResult(true, cycleComplete);
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error(
-                    "tryClaimReward failed for team={} reward={} scopeType={} cycle={} - rewardFailClosed={}",
-                    teamId, rewardId, scopeType, cycle, Config.rewardFailClosed, e);
-            return new ScopedClaimResult(!Config.rewardFailClosed, false);
-        }
+        return rewardClaimRepository.tryClaimRewardScoped(teamId, rewardId, scopeType, scopeUuid, cycle, claimedAtMs, questRewardIds);
     }
 
     public java.util.List<UUID> selectMigratedTeamIds(String serverIdTag) {
@@ -422,48 +366,12 @@ public class MySQLBackend {
     public boolean seedClaimScope(UUID teamId, long rewardId, String scopeType, UUID scopeUuid,
                                   long cycle, long claimedAtMs, String serverIdTag) {
         if (!isAvailable()) return false;
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_TRY_CLAIM_SCOPED)) {
-            ps.setString(1, scopeType);
-            ps.setString(2, scopeUuid.toString());
-            ps.setLong(3, rewardId);
-            ps.setLong(4, cycle);
-            ps.setString(5, teamId.toString());
-            ps.setLong(6, claimedAtMs);
-            ps.setString(7, serverIdTag);
-            return ps.executeUpdate() > 0;
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.warn("seedClaimScope failed team={} reward={} scope={}", teamId, rewardId, scopeType, e);
-            return false;
-        }
-    }
-
-    private int countClaimsInCycle(Connection conn, String scopeType, UUID scopeUuid, long cycle, long[] rewardIds) throws Exception {
-        if (rewardIds == null || rewardIds.length == 0) return 0;
-        StringBuilder sql = new StringBuilder(
-                "SELECT COUNT(*) FROM ftbquests_reward_claim_scopes "
-                + "WHERE scope_type=? AND scope_uuid=? AND cycle=? AND state='GRANTED' AND reward_id IN (");
-        for (int i = 0; i < rewardIds.length; i++) {
-            if (i > 0) sql.append(',');
-            sql.append('?');
-        }
-        sql.append(')');
-        try (PreparedStatement ps = conn.prepareStatement(sql.toString())) {
-            ps.setString(1, scopeType);
-            ps.setString(2, scopeUuid.toString());
-            ps.setLong(3, cycle);
-            for (int i = 0; i < rewardIds.length; i++) {
-                ps.setLong(4 + i, rewardIds[i]);
-            }
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getInt(1) : 0;
-            }
-        }
+        return rewardClaimRepository.seedClaimScope(teamId, rewardId, scopeType, scopeUuid, cycle, claimedAtMs, serverIdTag);
     }
 
     public CompletableFuture<Boolean> tryClaimRewardScopedAsync(UUID teamId, long rewardId, String scopeType, UUID scopeUuid, long claimedAtMs) {
         try {
-            return CompletableFuture.supplyAsync(() -> tryClaimRewardScoped(teamId, rewardId, scopeType, scopeUuid, claimedAtMs), dbExecutor);
+            return CompletableFuture.supplyAsync(() -> rewardClaimRepository.tryClaimRewardScoped(teamId, rewardId, scopeType, scopeUuid, claimedAtMs), dbExecutor);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("DB queue full; cannot guard reward claim team={} reward={} scopeType={}", teamId, rewardId, scopeType, e);
             return CompletableFuture.completedFuture(!Config.rewardFailClosed);
@@ -474,7 +382,7 @@ public class MySQLBackend {
             UUID teamId, long rewardId, String scopeType, UUID scopeUuid, long cycle, long claimedAtMs, long[] questRewardIds) {
         try {
             return CompletableFuture.supplyAsync(
-                    () -> tryClaimRewardScoped(teamId, rewardId, scopeType, scopeUuid, cycle, claimedAtMs, questRewardIds),
+                    () -> rewardClaimRepository.tryClaimRewardScoped(teamId, rewardId, scopeType, scopeUuid, cycle, claimedAtMs, questRewardIds),
                     dbExecutor);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("DB queue full; cannot guard reward claim team={} reward={} scopeType={} cycle={}",
@@ -948,82 +856,33 @@ public class MySQLBackend {
 
     public void deleteRewardClaim(UUID teamId, long rewardId, UUID claimUuid) {
         if (!isAvailable()) return;
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_DELETE_CLAIM)) {
-            ps.setString(1, teamId.toString());
-            ps.setLong(2, rewardId);
-            ps.setString(3, claimUuid.toString());
-            int rows = ps.executeUpdate();
-            FTBQuestsSync.LOGGER.info("Reward claim DELETED (reset): team={} reward={} claimUuid={} rows={}",
-                    teamId, rewardId, claimUuid, rows);
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("deleteRewardClaim failed team={} reward={}", teamId, rewardId, e);
-        }
+        rewardClaimRepository.deleteRewardClaim(teamId, rewardId, claimUuid);
     }
 
     public void deleteRewardClaimScopedAsync(String scopeType, UUID scopeUuid, long rewardId) {
         if (!isAvailable()) return;
         try {
-            CompletableFuture.runAsync(() -> deleteRewardClaimScoped(scopeType, scopeUuid, rewardId), dbExecutor);
+            CompletableFuture.runAsync(() -> rewardClaimRepository.deleteRewardClaimScoped(scopeType, scopeUuid, rewardId), dbExecutor);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("DB queue full; cannot delete scoped reward claim scopeType={} scopeUuid={} reward={}",
                     scopeType, scopeUuid, rewardId, e);
         }
     }
 
-    private void deleteRewardClaimScoped(String scopeType, UUID scopeUuid, long rewardId) {
-        if (!isAvailable()) return;
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_DELETE_CLAIM_SCOPED)) {
-            ps.setString(1, scopeType);
-            ps.setString(2, scopeUuid.toString());
-            ps.setLong(3, rewardId);
-            int rows = ps.executeUpdate();
-            FTBQuestsSync.LOGGER.info("Scoped reward claim DELETED: scopeType={} scopeUuid={} reward={} rows={}",
-                    scopeType, scopeUuid, rewardId, rows);
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("deleteRewardClaimScoped failed scopeType={} scopeUuid={} reward={}",
-                    scopeType, scopeUuid, rewardId, e);
-        }
-    }
-
     public void deleteAllClaimsForReward(UUID teamId, long rewardId) {
         if (!isAvailable()) return;
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_DELETE_ALL_CLAIMS_FOR_REWARD)) {
-            ps.setString(1, teamId.toString());
-            ps.setLong(2, rewardId);
-            int rows = ps.executeUpdate();
-            FTBQuestsSync.LOGGER.info("All claims DELETED for reward: team={} reward={} rows={}",
-                    teamId, rewardId, rows);
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("deleteAllClaimsForReward failed team={} reward={}", teamId, rewardId, e);
-        }
+        rewardClaimRepository.deleteAllClaimsForReward(teamId, rewardId);
     }
 
     public void deleteAllClaimsForRewardAsync(UUID teamId, long rewardId) {
         if (!isAvailable()) return;
         try {
             CompletableFuture.runAsync(() -> {
-                deleteAllClaimsForReward(teamId, rewardId);
-                deleteAllScopedClaimsForReward(teamId, rewardId);
+                rewardClaimRepository.deleteAllClaimsForReward(teamId, rewardId);
+                rewardClaimRepository.deleteAllScopedClaimsForReward(teamId, rewardId);
             }, dbExecutor);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("DB queue full; cannot delete all reward claims team={} reward={}", teamId, rewardId, e);
-        }
-    }
-
-    private void deleteAllScopedClaimsForReward(UUID teamId, long rewardId) {
-        if (!isAvailable()) return;
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_DELETE_ALL_CLAIMS_SCOPED_FOR_REWARD)) {
-            ps.setString(1, teamId.toString());
-            ps.setLong(2, rewardId);
-            int rows = ps.executeUpdate();
-            FTBQuestsSync.LOGGER.info("All scoped claims DELETED for reward: team={} reward={} rows={}",
-                    teamId, rewardId, rows);
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("deleteAllScopedClaimsForReward failed team={} reward={}", teamId, rewardId, e);
         }
     }
 
@@ -1503,24 +1362,13 @@ public class MySQLBackend {
 
     public void upsertRankProgress(UUID playerUuid, long questId, long taskId, long progress, long completedAtMs) {
         if (!isAvailable()) return;
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_UPSERT_RANK_PROGRESS)) {
-            ps.setString(1, playerUuid.toString());
-            ps.setLong(2, questId);
-            ps.setLong(3, taskId);
-            ps.setLong(4, progress);
-            ps.setLong(5, completedAtMs);
-            ps.setString(6, RedisSync.getInstance().getServerId());
-            ps.executeUpdate();
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("upsertRankProgress failed player={} quest={}", playerUuid, questId, e);
-        }
+        rankProgressRepository.upsertRankProgress(playerUuid, questId, taskId, progress, completedAtMs);
     }
 
     public CompletableFuture<Void> upsertRankProgressAsync(UUID playerUuid, long questId, long taskId, long progress, long completedAtMs) {
         if (!isAvailable()) return CompletableFuture.completedFuture(null);
         try {
-            return CompletableFuture.runAsync(() -> upsertRankProgress(playerUuid, questId, taskId, progress, completedAtMs), dbExecutor);
+            return CompletableFuture.runAsync(() -> rankProgressRepository.upsertRankProgress(playerUuid, questId, taskId, progress, completedAtMs), dbExecutor);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("DB queue full; cannot upsert rank progress player={} quest={}", playerUuid, questId, e);
             return CompletableFuture.completedFuture(null);
@@ -1529,20 +1377,13 @@ public class MySQLBackend {
 
     public void deleteRankProgress(UUID playerUuid, long questId) {
         if (!isAvailable()) return;
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_DELETE_RANK_PROGRESS)) {
-            ps.setString(1, playerUuid.toString());
-            ps.setLong(2, questId);
-            ps.executeUpdate();
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("deleteRankProgress failed player={} quest={}", playerUuid, questId, e);
-        }
+        rankProgressRepository.deleteRankProgress(playerUuid, questId);
     }
 
     public CompletableFuture<Void> deleteRankProgressAsync(UUID playerUuid, long questId) {
         if (!isAvailable()) return CompletableFuture.completedFuture(null);
         try {
-            return CompletableFuture.runAsync(() -> deleteRankProgress(playerUuid, questId), dbExecutor);
+            return CompletableFuture.runAsync(() -> rankProgressRepository.deleteRankProgress(playerUuid, questId), dbExecutor);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("DB queue full; cannot delete rank progress player={} quest={}", playerUuid, questId, e);
             return CompletableFuture.completedFuture(null);
@@ -1550,26 +1391,14 @@ public class MySQLBackend {
     }
 
     public java.util.List<RankProgressRow> loadRankProgress(UUID playerUuid) {
-        java.util.List<RankProgressRow> result = new java.util.ArrayList<>();
-        if (!isAvailable()) return result;
-        try (Connection conn = connectionProvider.getConnection();
-             PreparedStatement ps = conn.prepareStatement(SQL_SELECT_RANK_PROGRESS)) {
-            ps.setString(1, playerUuid.toString());
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    result.add(new RankProgressRow(rs.getLong(1), rs.getLong(2), rs.getLong(3), rs.getLong(4)));
-                }
-            }
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.error("loadRankProgress failed player={}", playerUuid, e);
-        }
-        return result;
+        if (!isAvailable()) return java.util.List.of();
+        return rankProgressRepository.loadRankProgress(playerUuid);
     }
 
     public CompletableFuture<java.util.List<RankProgressRow>> loadRankProgressAsync(UUID playerUuid) {
         if (!isAvailable()) return CompletableFuture.completedFuture(java.util.List.of());
         try {
-            return CompletableFuture.supplyAsync(() -> loadRankProgress(playerUuid), dbExecutor);
+            return CompletableFuture.supplyAsync(() -> rankProgressRepository.loadRankProgress(playerUuid), dbExecutor);
         } catch (Exception e) {
             FTBQuestsSync.LOGGER.warn("DB queue full; cannot load rank progress player={}", playerUuid, e);
             return CompletableFuture.completedFuture(java.util.List.of());
@@ -1831,7 +1660,7 @@ public class MySQLBackend {
         public final long progress;
         public final long completedAtMs;
 
-        private RankProgressRow(long questId, long taskId, long progress, long completedAtMs) {
+        public RankProgressRow(long questId, long taskId, long progress, long completedAtMs) {
             this.questId = questId;
             this.taskId = taskId;
             this.progress = progress;

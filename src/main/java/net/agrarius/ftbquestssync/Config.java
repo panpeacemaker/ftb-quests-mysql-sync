@@ -23,15 +23,15 @@ import java.util.UUID;
  */
 public final class Config {
 
-    static String mysqlHost = "127.0.0.1";
-    static int mysqlPort = 3306;
-    static String mysqlDatabase = "agrarius_test";
-    static String mysqlUsername = "agrarius";
-    static String mysqlPassword = "";
-    static int mysqlMaxPool = 4;
-    static int mysqlMinIdle = 1;
-    static boolean mysqlUseSsl = true;
-    static boolean mysqlAllowPublicKeyRetrieval = false;
+    public static String mysqlHost = "127.0.0.1";
+    public static int mysqlPort = 3306;
+    public static String mysqlDatabase = "agrarius_test";
+    public static String mysqlUsername = "agrarius";
+    public static String mysqlPassword = "";
+    public static int mysqlMaxPool = 4;
+    public static int mysqlMinIdle = 1;
+    public static boolean mysqlUseSsl = true;
+    public static boolean mysqlAllowPublicKeyRetrieval = false;
 
     static String redisHost = "127.0.0.1";
     static int redisPort = 6379;
