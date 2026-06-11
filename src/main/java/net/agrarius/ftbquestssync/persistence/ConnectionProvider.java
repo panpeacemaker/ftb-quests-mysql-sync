@@ -1,16 +1,18 @@
-package net.agrarius.ftbquestssync;
+package net.agrarius.ftbquestssync.persistence;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
+import net.agrarius.ftbquestssync.Config;
+
 import java.sql.Connection;
 import java.sql.SQLException;
 
 /** Owns the HikariCP pool lifecycle for the MySQL backend. */
-final class ConnectionProvider {
+public final class ConnectionProvider {
     private HikariDataSource dataSource;
 
     /** Builds the pool from Config and opens it. Caller guarantees password is present. */
-    void open() throws Exception {
+    public void open() throws Exception {
         HikariConfig hc = new HikariConfig();
         hc.setDriverClassName("com.mysql.cj.jdbc.Driver");
         hc.setJdbcUrl(String.format(
@@ -27,15 +29,15 @@ final class ConnectionProvider {
         dataSource = new HikariDataSource(hc);
     }
 
-    Connection getConnection() throws SQLException {
+    public Connection getConnection() throws SQLException {
         return dataSource.getConnection();
     }
 
-    boolean isAvailable() {
+    public boolean isAvailable() {
         return dataSource != null && !dataSource.isClosed();
     }
 
-    void close() {
+    public void close() {
         if (dataSource != null && !dataSource.isClosed()) {
             dataSource.close();
         }

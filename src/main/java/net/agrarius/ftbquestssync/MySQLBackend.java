@@ -2,6 +2,9 @@ package net.agrarius.ftbquestssync;
 
 import net.minecraft.nbt.CompoundTag;
 
+import net.agrarius.ftbquestssync.persistence.ConnectionProvider;
+import net.agrarius.ftbquestssync.persistence.SchemaManager;
+
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.sql.Connection;
