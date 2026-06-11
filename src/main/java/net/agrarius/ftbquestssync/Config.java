@@ -286,8 +286,7 @@ public final class Config {
     private static Map<String, Integer> rankBonusMapProp(String key, String tomlValue, Map<String, Integer> fallback) {
         String raw = System.getProperty(key, tomlValue == null ? null : tomlValue);
         if (raw == null || raw.isBlank()) return fallback;
-        Map<String, Integer> parsed = RankBonusResolver.parseConfig(raw);
-        return parsed.isEmpty() ? fallback : parsed;
+        return RankBonusResolver.parseConfig(raw);
     }
 
     private static long parseLongId(String token) {
