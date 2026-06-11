@@ -146,7 +146,7 @@ public class MySQLBackend {
             if (Config.mysqlPassword == null || Config.mysqlPassword.isBlank()) {
                 FTBQuestsSync.LOGGER.error(
                         "MySQL password missing; sync disabled. "
-                        + "Set /opt/agrarius/config/ftbquestssync-server.toml password "
+                        + "Set /opt/agrarius/config/ftbquestssync-common.toml password "
                         + "or -Dftbquestssync.mysql.password");
                 initialized = false;
                 return;

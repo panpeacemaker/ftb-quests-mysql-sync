@@ -51,7 +51,7 @@ No runtime IPs, CT IDs, or production ports are included in this handoff documen
 Runtime file:
 
 ```text
-/opt/agrarius/config/ftbquestssync-server.toml
+/opt/agrarius/config/ftbquestssync-common.toml
 ```
 
 Template without secrets:
