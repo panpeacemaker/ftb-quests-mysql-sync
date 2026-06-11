@@ -16,11 +16,6 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -44,10 +39,6 @@ public final class FtbSyncTeamCommand {
             new SimpleCommandExceptionType(Component.literal("Cannot kick the team owner."));
     private static final SimpleCommandExceptionType TRANSFER_NEEDS_MEMBER =
             new SimpleCommandExceptionType(Component.literal("New owner is not a member; invite/add first."));
-    private static final Duration PROFILE_LOOKUP_TIMEOUT = Duration.ofSeconds(5);
-    private static final HttpClient PROFILE_HTTP = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(3))
-            .build();
 
     private FtbSyncTeamCommand() {
     }
@@ -296,50 +287,7 @@ public final class FtbSyncTeamCommand {
         Optional<UUID> dbUuid = MySQLBackend.getInstance().selectPlayerUuidByName(name);
         if (dbUuid.isPresent()) return dbUuid.get();
 
-        Optional<UUID> mojangUuid = resolveMojangUuid(name);
-        if (mojangUuid.isPresent()) return mojangUuid.get();
-
         throw UNKNOWN_PLAYER.create();
-    }
-
-    private static Optional<UUID> resolveMojangUuid(String name) {
-        try {
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create("https://api.mojang.com/users/profiles/minecraft/" + name))
-                    .timeout(PROFILE_LOOKUP_TIMEOUT)
-                    .GET()
-                    .build();
-            HttpResponse<String> response = PROFILE_HTTP.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() != 200) return Optional.empty();
-            String id = jsonString(response.body(), "id");
-            return id == null ? Optional.empty() : Optional.of(uuidFromUndashed(id));
-        } catch (Exception e) {
-            FTBQuestsSync.LOGGER.warn("Mojang profile lookup failed for {}", name, e);
-            return Optional.empty();
-        }
-    }
-
-    private static String jsonString(String json, String key) {
-        String needle = "\"" + key + "\"";
-        int keyIndex = json.indexOf(needle);
-        if (keyIndex < 0) return null;
-        int colon = json.indexOf(':', keyIndex + needle.length());
-        if (colon < 0) return null;
-        int firstQuote = json.indexOf('"', colon + 1);
-        if (firstQuote < 0) return null;
-        int secondQuote = json.indexOf('"', firstQuote + 1);
-        if (secondQuote < 0) return null;
-        return json.substring(firstQuote + 1, secondQuote);
-    }
-
-    private static UUID uuidFromUndashed(String id) {
-        String raw = id.replace("-", "");
-        if (raw.length() != 32) throw new IllegalArgumentException("Bad Mojang UUID length");
-        return UUID.fromString(raw.substring(0, 8) + "-"
-                + raw.substring(8, 12) + "-"
-                + raw.substring(12, 16) + "-"
-                + raw.substring(16, 20) + "-"
-                + raw.substring(20));
     }
 
     private static void requireDb(MySQLBackend db) throws CommandSyntaxException {
