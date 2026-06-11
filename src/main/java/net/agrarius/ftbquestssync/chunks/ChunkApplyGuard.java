@@ -1,4 +1,4 @@
-package net.agrarius.ftbquestssync;
+package net.agrarius.ftbquestssync.chunks;
 
 import java.util.HashMap;
 import java.util.Map;

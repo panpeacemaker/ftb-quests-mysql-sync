@@ -1,4 +1,6 @@
-package net.agrarius.ftbquestssync;
+package net.agrarius.ftbquestssync.chunks;
+
+import net.agrarius.ftbquestssync.FTBQuestsSync;
 
 import dev.ftb.mods.ftbchunks.api.ClaimedChunk;
 import dev.ftb.mods.ftbchunks.api.ChunkTeamData;
