@@ -20,7 +20,7 @@ import java.util.zip.ZipInputStream;
  * the SHA-256 + UUID field. Does NOT write to MySQL.
  *
  * Usage:
- *   java -cp ftb-quests-mysql-sync-1.2.0.jar net.agrarius.ftbquestssync.migration.DryRunMain <dir|file>
+ *   java -cp ftb-quests-mysql-sync-1.2.1.jar net.agrarius.ftbquestssync.migration.DryRunMain <dir|file>
  */
 public final class DryRunMain {
 
