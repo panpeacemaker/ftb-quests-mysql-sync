@@ -72,10 +72,10 @@ TeamSync.java:124, FTBQuestsSync.java:59 — version token tracks the release):
 MySQL ready: <host>:3306/<db> user=<user> pool=<minIdle>/<maxPool>
 Redis ready: <host>:6379 channel=agrarius:quests:team-updated serverId=agr1
 TeamSync Redis ready: channel=ftbquests:team:membership
-FTB Quests Sync 1.2.0 ready (mysqlAvailable=true, redisEnabled=true, teamsRedisEnabled=true, serverId=agr1)
+FTB Quests Sync 1.2.1 ready (mysqlAvailable=true, redisEnabled=true, teamsRedisEnabled=true, serverId=agr1)
 ```
-Gate: all 4 present; serverId correct per CT. If the JAR still logs `1.1.9`, the
-1.2.0 build has not shipped — fail the gate.
+Gate: all 4 present; serverId correct per CT. If the JAR still logs `1.2.0`, the
+1.2.1 build has not shipped — fail the gate.
 
 ---
 
@@ -154,12 +154,16 @@ Mod build:
 ```
 export JAVA_HOME=/usr/lib/jvm/java-17-openjdk   # MUST be JDK 17; system default may be newer and breaks the build
 ./gradlew clean reobfShadowJar
-# output: build/libs/ftb-quests-mysql-sync-1.2.0.jar
-sha256sum build/libs/ftb-quests-mysql-sync-1.2.0.jar   # record; must match on agr1 + agr2
+# output: build/libs/ftb-quests-mysql-sync-1.2.1.jar
+sha256sum build/libs/ftb-quests-mysql-sync-1.2.1.jar   # record; must match on agr1 + agr2
 ```
-RELEASE artifact (v1.2.0, `./gradlew clean reobfShadowJar`, JDK 17.0.19 — this is the jar to DEPLOY):
+RELEASE artifact (v1.2.1, `./gradlew clean reobfShadowJar`, JDK 17 — this is the jar to DEPLOY):
+`TBD  ftb-quests-mysql-sync-1.2.1.jar`
+Published at GitHub release `v1.2.1`. Deploy the SAME jar to agr1 + agr2; verify identical SHA256.
+
+Historical RELEASE artifact (v1.2.0, `./gradlew clean reobfShadowJar`, JDK 17.0.19):
 `6c4076f0dc0127fc22aba4fec04e40a4780adfce574f20c8520d122098af9a0e  ftb-quests-mysql-sync-1.2.0.jar`
-Published at GitHub release `v1.2.0`. Deploy the SAME jar to agr1 + agr2; verify identical SHA256.
+Published at GitHub release `v1.2.0`.
 (Dev jar from `./gradlew clean build` differs intentionally: `38a104ac…4735`.)
 Web install (reproducible):
 ```
@@ -169,6 +173,11 @@ cd web && npm ci    # requires committed package-lock.json
 Deployment: build JAR → copy SAME jar to both backends → verify identical SHA256 →
 verify TOML on both → restart → run Section 2 boot smoke. Deploy to a staging/test
 world before prod.
+
+Restart procedure (discovered during 2026-06-11 v1.2.0 deploy): graceful RCON `stop`
+can hang because Spark's `spark-async-sampler-worker-thread` is non-daemon. Send RCON
+`stop`, then wait up to ~2 minutes for the Java process to exit. If the process is
+still up, SIGTERM the java PID (clean shutdown), then start.
 
 Rollback (deploy): `git checkout v1.1.8-handoff-baseline` + redeploy the prior JAR.
 Code-only changes do not alter the DB; the web app is stateless.
