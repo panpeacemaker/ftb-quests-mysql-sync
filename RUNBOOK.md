@@ -157,8 +157,8 @@ export JAVA_HOME=/usr/lib/jvm/java-17-openjdk   # MUST be JDK 17; system default
 # output: build/libs/ftb-quests-mysql-sync-1.2.1.jar
 sha256sum build/libs/ftb-quests-mysql-sync-1.2.1.jar   # record; must match on agr1 + agr2
 ```
-RELEASE artifact (v1.2.1, `./gradlew clean reobfShadowJar`, JDK 17 — this is the jar to DEPLOY):
-`TBD  ftb-quests-mysql-sync-1.2.1.jar`
+RELEASE artifact (v1.2.1, `./gradlew clean reobfShadowJar`, JDK 17.0.27 — this is the jar to DEPLOY):
+`993fd4d4c8aab8db2509e0d57e5679f48fcc221585e3c3f48fee707d492221d0  ftb-quests-mysql-sync-1.2.1.jar`
 Published at GitHub release `v1.2.1`. Deploy the SAME jar to agr1 + agr2; verify identical SHA256.
 
 Historical RELEASE artifact (v1.2.0, `./gradlew clean reobfShadowJar`, JDK 17.0.19):

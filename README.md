@@ -9,9 +9,9 @@ This repository is intentionally scoped to the mod project only. Runtime secrets
 | Area | Status |
 |---|---|
 | Minecraft/Forge target | Forge 1.20.1 server-side mod |
-| Current version | `1.2.0` |
+| Current version | `1.2.1` |
 | Build command | `./gradlew clean reobfShadowJar` |
-| Output JAR | `build/libs/ftb-quests-mysql-sync-1.2.0.jar` |
+| Output JAR | `build/libs/ftb-quests-mysql-sync-1.2.1.jar` |
 | Deployment model | same JAR on `agr1` and `agr2` |
 | Canonical storage | MySQL/MariaDB |
 | Live invalidation | Redis pub/sub |
@@ -171,7 +171,7 @@ For `agr2`, keep the same config but change `serverId = "agr2"`.
 ./gradlew clean build
 ```
 
-Output: `build/libs/ftb-quests-mysql-sync-1.2.0.jar`
+Output: `build/libs/ftb-quests-mysql-sync-1.2.1.jar`
 
 ## Deployment checklist
 
@@ -303,7 +303,7 @@ Leave the `source*Table` / `source*Column` keys at their defaults — they alrea
 Run the offline JDBC dry-run from the JAR (no Forge needed) to prove the source side is wired up:
 
 ```bash
-java -cp /opt/agrarius/mods/ftb-quests-mysql-sync-1.2.0.jar \
+java -cp /opt/agrarius/mods/ftb-quests-mysql-sync-1.2.1.jar \
      net.agrarius.ftbquestssync.migration.MigrateDryRunMain \
      --src maria --db-host DB_HOST --db-name agrarius_test \
      --db-user agrarius --db-pass REPLACE_ME
