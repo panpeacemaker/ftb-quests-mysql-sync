@@ -117,7 +117,7 @@ System.getProperty("luckperms.server", "unknown")
 
 ## Configuration template
 
-Runtime path: `/opt/agrarius/config/ftbquestssync-server.toml`
+Runtime path: `/opt/agrarius/config/ftbquestssync-common.toml`
 
 Template without secrets or infrastructure-specific addresses:
 
@@ -144,13 +144,17 @@ serverId = "agr1"
 [features]
 syncQuests = true
 syncTeams = true
+syncChunks = false
+chunkSeedOnStart = false
+chunkCanonicalServerId = "agr1"
+chunkForceLoadSync = true
 sendFullTeamData = true
 # sendDeltaPackets and conflictPolicy are removed/inert (ignored if present)
 
 [policy]
 mode = "blacklist"
-soloChapterIds = ["3622ED01311E6763", "3CEC7F7BAD54E4C6"]
-repeatableSoloChapterIds = ["3622ED01311E6763", "3CEC7F7BAD54E4C6"]
+soloChapterIds = ["3622ED01311E6763", "67F6F5055518AC4F"]
+repeatableSoloChapterIds = []
 soloQuestIds = []
 soloTaskIds = []
 syncSoloProgressPerPlayer = true
@@ -174,7 +178,7 @@ Output: `build/libs/ftb-quests-mysql-sync-1.2.0.jar`
 1. Build the JAR.
 2. Copy the same JAR to both Forge backends.
 3. Verify SHA256 is identical on `agr1` and `agr2`.
-4. Verify `/opt/agrarius/config/ftbquestssync-server.toml` on both backends.
+4. Verify `/opt/agrarius/config/ftbquestssync-common.toml` on both backends.
 5. Restart both backends.
 6. Check logs for MySQL, Redis, TeamSync, and the correct `serverId`.
 
@@ -266,7 +270,7 @@ A **party** export carries the shared party UUID (different from the player UUID
 
 ### Step 1 — fill in the `[migration]` block
 
-Edit `/opt/agrarius/config/ftbquestssync-server.toml`. Real Agrarius values shown:
+Edit `/opt/agrarius/config/ftbquestssync-common.toml`. Real Agrarius values shown:
 
 ```toml
 [migration]
@@ -365,7 +369,7 @@ SELECT COUNT(*) FROM ftbquests_reward_claim_scopes;
 
 ## Configuration reference
 
-All keys live in the `[migration]` block of `ftbquestssync-server.toml`, or as `-Dftbquestssync.migration.<key>=<value>` JVM properties (which override the TOML).
+All keys live in the `[migration]` block of `ftbquestssync-common.toml`, or as `-Dftbquestssync.migration.<key>=<value>` JVM properties (which override the TOML).
 
 | TOML key | Default | Required? | Meaning |
 |---|---|---|---|

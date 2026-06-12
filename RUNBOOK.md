@@ -16,22 +16,44 @@ Infra (current deployment, replace with customer's on handoff):
 
 ## 1. Configuration
 
-Runtime path on each backend: `/opt/agrarius/config/ftbquestssync-server.toml`.
+Runtime path on each backend: `/opt/agrarius/config/ftbquestssync-common.toml`
+(Forge COMMON config; the previous `ftbquestssync-server.toml` name is no longer
+used by the mod).
+
+The mod uses Forge's `COMMON` config type intentionally. `SERVER`-type configs are
+synced to connecting clients and would leak MySQL/Redis credentials; `COMMON` loads
+globally on the server side only.
 
 Config key set (redact `password`/`redisPassword` to `***` when capturing):
 `[mysql]` host, port, database, username, password, maxPoolSize, minIdle, useSsl,
 allowPublicKeyRetrieval · `[redis]` redisHost, redisPort, redisPassword ·
-`[server]` serverId · `[features]` syncQuests, syncTeams, sendFullTeamData,
-conflictPolicy* · `[policy]` mode, soloChapterIds, repeatableSoloChapterIds,
-soloQuestIds, soloTaskIds, syncSoloProgressPerPlayer, soloRewardsPerPlayer,
-teamRewardsDedupGlobal, rewardFailClosed, teamClaimChapterIds.
+`[server]` serverId · `[features]` syncQuests, syncTeams, syncChunks,
+chunkSeedOnStart, chunkCanonicalServerId, chunkForceLoadSync, sendFullTeamData ·
+`[policy]` mode, soloChapterIds, repeatableSoloChapterIds, soloQuestIds,
+soloTaskIds, syncSoloProgressPerPlayer, soloRewardsPerPlayer,
+teamRewardsDedupGlobal, rewardFailClosed, teamClaimChapterIds,
+teamSharedChapterIds, rankBonuses · `[migration]` runOnBoot, redisKeyPrefix,
+redisDb, sourceMysqlHost, sourceMysqlPort, sourceMysqlDatabase,
+sourceMysqlUsername, sourceMysqlPassword, sourcePlayersTable, sourceDataTable,
+sourceCreatedAtColumn, sourceIdPlayerColumn, sourceDataColumn, sourceUuidColumn,
+sourceIdColumn, serverIdTag, maxPlayers, dryRun, maxBlobBytes, maxSnbtBytes,
+overwriteExisting, runOnServerId, markerDir, remapUuids, usercachePath.
 
 \* `conflictPolicy` and `sendDeltaPackets` are DEPRECATED/inert as of 1.1.9 — the
-parser ignores them; they have no runtime effect. Safe to leave or delete from TOML.
+old parser ignored them and the new Forge spec does not define them; they have no
+runtime effect. Safe to leave or delete from TOML.
+
+Migration from the legacy flat `ftbquestssync-server.toml`: on first server start,
+if the new Forge file still has defaults (blank MySQL password and blank serverId)
+and `/opt/agrarius/config/ftbquestssync-server.toml` exists, the mod copies legacy
+values into the new file, saves it, and continues using the new file. The legacy
+file is left on disk and is no longer read. To force a clean migration, ensure the
+new `ftbquestssync-common.toml` does not exist or contains only defaults, and keep
+the legacy file in place for the first restart.
 
 Capture live config (OPS, read-only):
 ```
-sudo pct exec 1013 -- cat /opt/agrarius/config/ftbquestssync-server.toml   # repeat 1014
+sudo pct exec 1013 -- cat /opt/agrarius/config/ftbquestssync-common.toml   # repeat 1014
 ```
 Expected per-backend: identical keys; `serverId=agr1` (1013) / `serverId=agr2` (1014).
 Current hardened posture (verified 2026-06-08): `repeatableSoloChapterIds=[]` on both.
